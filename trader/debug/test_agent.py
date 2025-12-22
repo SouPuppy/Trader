@@ -1,5 +1,5 @@
 """
-测试 Agent 接口的使用示例
+测试 agent 接口的使用示例
 演示 score 和 weight 的区别和使用
 """
 import sys
@@ -9,7 +9,7 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from trader.Agents import DummyAgent
+from trader.agent import DummyAgent
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
@@ -19,8 +19,8 @@ logger = get_logger(__name__)
 
 
 def test_agent():
-    """测试 Agent 的使用"""
-    for line in log_section("测试 Agent 接口"):
+    """测试 agent 的使用"""
+    for line in log_section("测试 agent 接口"):
         logger.info(line)
     
     # 初始化
@@ -28,7 +28,7 @@ def test_agent():
     account = Account(initial_cash=100000.0)
     engine = BacktestEngine(account, market, enable_report=False)
     
-    # 创建 Dummy Agent
+    # 创建 Dummy agent
     agent = DummyAgent(
         name="TestAgent",
         max_position_weight=0.1,  # 单个股票最多配置10%
@@ -42,7 +42,7 @@ def test_agent():
     def on_trading_day(eng: BacktestEngine, date: str):
         """每个交易日的回调"""
         if eng.date_index == 0:  # 只在第一天演示
-            logger.info(f"\n[{date}] Agent 使用示例:")
+            logger.info(f"\n[{date}] agent 使用示例:")
             
             # 1. 计算 score（研究问题：看好程度）
             score = agent.score(stock_code, eng)

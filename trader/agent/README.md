@@ -52,7 +52,7 @@ DummyAgent (示例实现)
 ### 1. 创建自定义 Agent
 
 ```python
-from trader.Agents import AbstractAgent
+from trader.agent import AbstractAgent
 from trader.backtest.engine import BacktestEngine
 
 class MyAgent(AbstractAgent):
@@ -79,7 +79,7 @@ class MyAgent(AbstractAgent):
 ### 2. 在回测中使用 Agent
 
 ```python
-from trader.Agents import DummyAgent
+from trader.agent import DummyAgent
 from trader.backtest.engine import BacktestEngine
 
 def on_trading_day(engine: BacktestEngine, date: str):

@@ -3,7 +3,7 @@ Dummy Agent 示例实现
 一个简单的 Agent 实现，用于演示和测试
 """
 from typing import Dict, List
-from trader.Agents.abstract_agent import AbstractAgent
+from trader.agent.abstract_agent import AbstractAgent
 from trader.backtest.engine import BacktestEngine
 from trader.logger import get_logger
 

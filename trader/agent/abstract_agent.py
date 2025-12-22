@@ -3,7 +3,7 @@
 提供一些通用的基础实现，方便子类继承
 """
 from typing import Dict, List, Optional
-from trader.Agents.Agent import Agent
+from trader.agent.Agent import Agent
 from trader.backtest.engine import BacktestEngine
 from trader.logger import get_logger
 

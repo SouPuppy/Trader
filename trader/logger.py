@@ -45,10 +45,12 @@ LEVEL_COLORS = {
 }
 
 class ColoredFormatter(logging.Formatter):
-    """带颜色的日志格式化器，支持级别名称对齐"""
+    """带颜色的日志格式化器，支持级别名称和模块名称对齐"""
     
     # 级别名称固定宽度（对齐用）
     LEVEL_WIDTH = 8
+    # 模块名称固定宽度（对齐用）
+    NAME_WIDTH = 25
     
     def __init__(self, use_color=True, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -68,11 +70,15 @@ class ColoredFormatter(logging.Formatter):
             self.use_color = False
     
     def format(self, record):
-        # 保存原始级别名称
+        # 保存原始值
         original_levelname = record.levelname
+        original_name = record.name
         
         # 对齐级别名称（固定宽度）
         aligned_levelname = original_levelname.ljust(self.LEVEL_WIDTH)
+        
+        # 对齐模块名称（固定宽度）
+        aligned_name = original_name.ljust(self.NAME_WIDTH)
         
         # 如果使用颜色，为级别名称添加颜色
         if self.use_color:
@@ -83,11 +89,15 @@ class ColoredFormatter(logging.Formatter):
             # 不使用颜色时，只对齐
             record.levelname = aligned_levelname
         
+        # 设置对齐后的模块名称
+        record.name = aligned_name
+        
         # 格式化日志消息
         formatted = super().format(record)
         
-        # 恢复原始级别名称（避免影响其他 handler）
+        # 恢复原始值（避免影响其他 handler）
         record.levelname = original_levelname
+        record.name = original_name
         
         return formatted
 
@@ -135,7 +145,7 @@ def setup_logger(name: str = 'trader', level: str = 'INFO') -> logging.Logger:
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
     
-    # 文件 handler（带轮转，不使用颜色）
+    # 文件 handler（带轮转，不使用颜色，但使用对齐）
     file_handler = RotatingFileHandler(
         LOG_FILE,
         maxBytes=10 * 1024 * 1024,  # 10MB
@@ -143,7 +153,7 @@ def setup_logger(name: str = 'trader', level: str = 'INFO') -> logging.Logger:
         encoding='utf-8'
     )
     file_handler.setLevel(log_level)
-    file_formatter = logging.Formatter(LOG_FORMAT, DATE_FORMAT)  # 文件不使用颜色
+    file_formatter = ColoredFormatter(use_color=False, fmt=LOG_FORMAT, datefmt=DATE_FORMAT)  # 文件不使用颜色，但使用对齐
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
     
