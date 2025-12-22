@@ -1,6 +1,6 @@
 """
-测试 agent 定投策略回测
-使用 Dummy Agent 实现定投策略并生成走势报告
+测试 TradingAgent 定投策略回测
+使用 DummyAgent 实现定投策略并生成走势报告
 """
 import sys
 from pathlib import Path
@@ -19,8 +19,8 @@ logger = get_logger(__name__)
 
 
 def test_agent():
-    """使用 Dummy Agent 进行定投策略回测"""
-    for line in log_section("Agent 定投策略回测"):
+    """使用 DummyAgent 进行定投策略回测"""
+    for line in log_section("TradingAgent 定投策略回测"):
         logger.info(line)
     
     # 配置参数
@@ -47,7 +47,7 @@ def test_agent():
     
     logger.info(f"数据范围: {available_dates[0]} 至 {available_dates[-1]}")
     
-    # 创建 Dummy Agent，启用定投策略
+    # 创建 DummyAgent，启用定投策略
     agent = DummyAgent(
         name="DCA_Agent",
         dca_enabled=True,

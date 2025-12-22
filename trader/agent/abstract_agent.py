@@ -1,18 +1,18 @@
 """
-抽象 Agent 实现
+抽象 TradingAgent 实现
 提供一些通用的基础实现，方便子类继承
 """
 from typing import Dict, List, Optional
-from trader.agent.Agent import Agent
+from trader.agent.TradingAgent import TradingAgent
 from trader.backtest.engine import BacktestEngine
 from trader.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-class AbstractAgent(Agent):
+class AbstractAgent(TradingAgent):
     """
-    抽象 Agent 实现
+    抽象 TradingAgent 实现
     提供一些通用的基础实现和工具方法
     """
     
@@ -21,10 +21,10 @@ class AbstractAgent(Agent):
                  min_score_threshold: float = 0.0,
                  max_total_weight: float = 1.0):
         """
-        初始化抽象 Agent
+        初始化抽象 TradingAgent
         
         Args:
-            name: Agent 名称
+            name: TradingAgent 名称
             max_position_weight: 单个股票最大配置比例（默认10%）
             min_score_threshold: 最小 score 阈值，低于此值的股票 weight 为 0
             max_total_weight: 所有股票总配置比例上限（默认100%）

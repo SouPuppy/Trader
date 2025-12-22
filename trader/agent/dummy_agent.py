@@ -1,6 +1,6 @@
 """
-Dummy Agent 示例实现
-一个简单的 Agent 实现，用于演示和测试
+Dummy TradingAgent 示例实现
+一个简单的 TradingAgent 实现，用于演示和测试
 支持定投策略（DCA）
 """
 from typing import Dict, List, Optional
@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 
 class DummyAgent(AbstractAgent):
     """
-    Dummy Agent 示例
+    Dummy TradingAgent 示例
     使用简单的规则计算 score 和 weight
     支持定投策略（DCA - Dollar Cost Averaging）
     """
@@ -27,10 +27,10 @@ class DummyAgent(AbstractAgent):
                  dca_amount: float = 1000.0,
                  dca_frequency: str = "monthly"):
         """
-        初始化 Dummy Agent
+        初始化 Dummy TradingAgent
         
         Args:
-            name: Agent 名称
+            name: TradingAgent 名称
             max_position_weight: 单个股票最大配置比例
             min_score_threshold: 最小 score 阈值
             max_total_weight: 所有股票总配置比例上限

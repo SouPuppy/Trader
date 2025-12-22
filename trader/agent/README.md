@@ -1,8 +1,8 @@
-# Agent 模块文档
+# TradingAgent 模块文档
 
 ## 核心概念
 
-Agent 模块区分了两个关键概念：
+TradingAgent 模块区分了两个关键概念：
 
 ### Score（研究问题）
 - **定义**: 表达"看好程度/预期收益/排序依据"
@@ -30,14 +30,14 @@ Agent 模块区分了两个关键概念：
 ## 类层次结构
 
 ```
-Agent (抽象基类)
+TradingAgent (抽象基类)
   ├── score() - 抽象方法：计算看好程度
   ├── weight() - 抽象方法：计算配置比例
   ├── get_scores() - 批量计算 score
   └── get_weights() - 批量计算 weight
 
 AbstractAgent (抽象实现)
-  ├── 继承自 Agent
+  ├── 继承自 TradingAgent
   ├── 提供默认的 weight() 实现
   ├── normalize_weights() - 权重归一化
   └── filter_by_score() - 根据 score 筛选股票
@@ -49,7 +49,7 @@ DummyAgent (示例实现)
 
 ## 使用示例
 
-### 1. 创建自定义 Agent
+### 1. 创建自定义 TradingAgent
 
 ```python
 from trader.agent import AbstractAgent
@@ -76,14 +76,14 @@ class MyAgent(AbstractAgent):
         return base_weight
 ```
 
-### 2. 在回测中使用 Agent
+### 2. 在回测中使用 TradingAgent
 
 ```python
 from trader.agent import DummyAgent
 from trader.backtest.engine import BacktestEngine
 
 def on_trading_day(engine: BacktestEngine, date: str):
-    # 创建 Agent
+    # 创建 TradingAgent
     agent = DummyAgent(
         max_position_weight=0.1,  # 单个股票最多10%
         min_score_threshold=0.0,  # score >= 0 才配置
@@ -124,7 +124,7 @@ def on_trading_day(engine: BacktestEngine, date: str):
    - Weight: 专注于工程和风控问题（如何配置资金）
 
 2. **可扩展性**:
-   - 继承 `AbstractAgent` 可以快速实现新 Agent
+   - 继承 `AbstractAgent` 可以快速实现新 TradingAgent
    - 只实现 `score()` 方法即可，`weight()` 有默认实现
 
 3. **灵活性**:
@@ -138,7 +138,7 @@ def on_trading_day(engine: BacktestEngine, date: str):
    - Weight 需要考虑风险控制，即使 Score 很高也可能配置较小比例
 
 2. **日期保护**:
-   - Agent 通过 engine 访问数据，自动带有日期保护
+   - TradingAgent 通过 engine 访问数据，自动带有日期保护
    - 不能访问未来数据
 
 3. **错误处理**:
