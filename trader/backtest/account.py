@@ -4,7 +4,7 @@
 """
 from datetime import datetime
 from typing import Dict, List, Optional
-from trader.logger import get_logger
+from trader.logger import get_logger, log_separator, log_section
 
 logger = get_logger(__name__)
 
@@ -230,18 +230,18 @@ class Account:
         profit = self.get_total_profit(market_prices)
         return_pct = self.get_total_return(market_prices)
         
-        lines = [
-            "=" * 60,
-            "账户摘要",
-            "=" * 60,
-            f"初始资金:     {self.initial_cash:,.2f} 元",
-            f"当前现金:     {self.cash:,.2f} 元",
-            f"持仓市值:     {equity - self.cash:,.2f} 元",
-            f"总权益:       {equity:,.2f} 元",
-            f"总盈亏:       {profit:+,.2f} 元 ({return_pct:+.2f}%)",
+        indent = "\t"
+        lines = log_section("账户摘要")
+        lines.extend([
             "",
-            "持仓明细:",
-        ]
+            f"{indent}初始资金:     {self.initial_cash:,.2f} 元",
+            f"{indent}当前现金:     {self.cash:,.2f} 元",
+            f"{indent}持仓市值:     {equity - self.cash:,.2f} 元",
+            f"{indent}总权益:       {equity:,.2f} 元",
+            f"{indent}总盈亏:       {profit:+,.2f} 元 ({return_pct:+.2f}%)",
+            "",
+            f"{indent}持仓明细:",
+        ])
         
         if self.positions:
             for stock_code, position in self.positions.items():
@@ -251,15 +251,15 @@ class Account:
                 total_profit = profit_per_share * position["shares"]
                 
                 lines.append(
-                    f"  {stock_code}: "
+                    f"{indent}  {stock_code}: "
                     f"{position['shares']} 股 @ 成本 {position['average_price']:.2f}, "
                     f"现价 {current_price:.2f}, "
                     f"市值 {market_value:,.2f}, "
                     f"盈亏 {total_profit:+,.2f}"
                 )
         else:
-            lines.append("  (无持仓)")
+            lines.append(f"{indent}  (无持仓)")
         
-        lines.append("=" * 60)
+        lines.append(log_separator())
         
         return "\n".join(lines)

@@ -407,9 +407,9 @@ def plot_all_features(
         dpi: 图表分辨率
         print_summary: 是否打印特征汇总信息
     """
-    logger.info("=" * 80)
-    logger.info("开始特征可视化流程")
-    logger.info("=" * 80)
+    from trader.logger import log_separator, log_section
+    for line in log_section("开始特征可视化流程", width=80):
+        logger.info(line)
     
     # 如果没有指定 symbols，获取所有 symbols
     if symbols is None:
@@ -452,9 +452,9 @@ def plot_all_features(
     logger.info("\n开始绘制图表...")
     plot_feature_trends(feature_data, output_dir=output_dir, figsize=figsize, dpi=dpi)
     
-    logger.info("\n" + "=" * 80)
-    logger.info("完成！所有特征图表已生成")
-    logger.info("=" * 80)
+    logger.info("")
+    for line in log_section("完成！所有特征图表已生成", width=80):
+        logger.info(line)
 
 
 def main():

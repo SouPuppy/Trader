@@ -16,7 +16,7 @@ import pandas as pd
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
-from trader.logger import get_logger
+from trader.logger import get_logger, log_separator, log_section
 
 logger = get_logger(__name__)
 
@@ -236,9 +236,8 @@ def turtle_strategy(
         start_date: 开始日期
         end_date: 结束日期
     """
-    logger.info("=" * 60)
-    logger.info("海龟策略回测")
-    logger.info("=" * 60)
+    for line in log_section("海龟策略回测"):
+        logger.info(line)
     logger.info(f"股票代码: {stock_code}")
     logger.info(f"初始资金: {initial_cash:,.2f} 元")
     logger.info(f"突破周期: {entry_period} 天")
@@ -414,15 +413,14 @@ def turtle_strategy(
     
     # 输出结果
     logger.info("")
-    logger.info("=" * 60)
-    logger.info("回测结果")
-    logger.info("=" * 60)
+    for line in log_section("回测结果"):
+        logger.info(line)
     logger.info(f"初始资金: {initial_cash:,.2f} 元")
     logger.info(f"最终权益: {equity:,.2f} 元")
     logger.info(f"总盈亏: {profit:+,.2f} 元")
     logger.info(f"总收益率: {return_pct:+.2f}%")
     logger.info(f"交易次数: {len(account.trades)}")
-    logger.info("=" * 60)
+    logger.info(log_separator())
     
     # 输出详细账户摘要
     logger.info("")

@@ -585,14 +585,13 @@ if __name__ == "__main__":
     # 统计未分析的新闻
     stats = count_unanalyzed_news()
     
-    print("\n" + "=" * 60)
-    print("新闻分析统计")
-    print("=" * 60)
+    from trader.logger import log_separator, log_section
+    print("\n" + "\n".join(log_section("新闻分析统计")))
     print(f"总记录数:        {stats['total']}")
     print(f"有新闻内容:      {stats['with_news']}")
     print(f"未分析:          {stats['unanalyzed']}")
     print(f"已分析:          {stats['analyzed']}")
-    print("=" * 60)
+    print(log_separator())
     
     # 默认处理全部未分析的新闻，除非指定了 --stats-only
     if not args.stats_only:
@@ -604,13 +603,11 @@ if __name__ == "__main__":
             limit = args.limit if args.limit else stats['unanalyzed']
             result = process_unanalyzed_news(limit=limit)
             
-            print("\n" + "=" * 60)
-            print("处理结果")
-            print("=" * 60)
+            print("\n" + "\n".join(log_section("处理结果")))
             print(f"成功处理:        {result['processed']}")
             print(f"处理失败:        {result['failed']}")
             print(f"跳过:            {result['skipped']}")
-            print("=" * 60)
+            print(log_separator())
         else:
             print("\n没有未分析的新闻需要处理")
     else:

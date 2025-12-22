@@ -11,16 +11,15 @@ if str(project_root) not in sys.path:
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
-from trader.logger import get_logger
+from trader.logger import get_logger, log_separator, log_section
 
 logger = get_logger(__name__)
 
 
 def test_engine_data_access():
     """测试engine的数据访问接口"""
-    logger.info("=" * 60)
-    logger.info("测试 Engine 数据访问接口和日期保护")
-    logger.info("=" * 60)
+    for line in log_section("测试 Engine 数据访问接口和日期保护"):
+        logger.info(line)
     
     # 初始化
     market = Market(price_adjustment=0.01)
@@ -98,9 +97,9 @@ def test_engine_data_access():
         end_date = available_dates[min(4, len(available_dates) - 1)]  # 只运行5天
         engine.run(stock_code, start_date=start_date, end_date=end_date)
     
-    logger.info("\n" + "=" * 60)
-    logger.info("测试完成")
-    logger.info("=" * 60)
+    logger.info("")
+    for line in log_section("测试完成"):
+        logger.info(line)
 
 
 if __name__ == "__main__":

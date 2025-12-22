@@ -15,7 +15,7 @@ from datetime import datetime
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
-from trader.logger import get_logger
+from trader.logger import get_logger, log_separator, log_section
 
 logger = get_logger(__name__)
 
@@ -37,9 +37,8 @@ def dca_strategy(
         start_date: 开始日期（格式: YYYY-MM-DD），如果为 None 则从最早可用日期开始
         end_date: 结束日期（格式: YYYY-MM-DD），如果为 None 则到最新日期
     """
-    logger.info("=" * 60)
-    logger.info("DCA 定投策略回测")
-    logger.info("=" * 60)
+    for line in log_section("DCA 定投策略回测"):
+        logger.info(line)
     logger.info(f"股票代码: {stock_code}")
     logger.info(f"初始资金: {initial_cash:,.2f} 元")
     logger.info(f"每月定投: {monthly_investment:,.2f} 元")
@@ -117,9 +116,8 @@ def dca_strategy(
     
     # 输出结果
     logger.info("")
-    logger.info("=" * 60)
-    logger.info("回测结果")
-    logger.info("=" * 60)
+    for line in log_section("回测结果"):
+        logger.info(line)
     logger.info(f"定投次数: {investment_count[0]}")
     logger.info(f"初始资金: {initial_cash:,.2f} 元")
     logger.info(f"实际投入: {total_invested:,.2f} 元")
@@ -138,7 +136,7 @@ def dca_strategy(
     logger.info(f"总权益: {equity:,.2f} 元")
     logger.info(f"总盈亏: {profit:+,.2f} 元")
     logger.info(f"总收益率: {return_pct:+.2f}%")
-    logger.info("=" * 60)
+    logger.info(log_separator())
     
     # 输出详细账户摘要
     logger.info("")

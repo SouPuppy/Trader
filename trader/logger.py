@@ -174,3 +174,36 @@ def get_logger(name: str = None) -> logging.Logger:
 # 创建默认 logger
 logger = setup_logger()
 
+
+def log_separator(width: int = 60, char: str = "=", indent: str = "\t"):
+    """
+    生成分隔线字符串（带缩进）
+    
+    Args:
+        width: 分隔线宽度
+        char: 分隔线字符
+        indent: 缩进字符串（默认使用 tab）
+        
+    Returns:
+        str: 分隔线字符串
+    """
+    return indent + char * width
+
+
+def log_section(title: str, width: int = 60, char: str = "=", indent: str = "\t"):
+    """
+    生成带标题的分隔线（带缩进）
+    
+    Args:
+        title: 标题文本
+        width: 分隔线宽度
+        char: 分隔线字符
+        indent: 缩进字符串（默认使用 tab）
+        
+    Returns:
+        List[str]: [分隔线, 标题, 分隔线] 列表
+    """
+    sep = indent + char * width
+    title_line = indent + title
+    return [sep, title_line, sep]
+
