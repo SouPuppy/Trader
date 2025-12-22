@@ -16,3 +16,6 @@ data/data.csv
 # Logs
 logs/
 *.log
+
+# output(s)
+output/
