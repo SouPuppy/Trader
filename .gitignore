@@ -1,0 +1,18 @@
+# Environments
+.env*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+
+# Poetry
+poetry.lock
+
+# datas (this should be auto generated)
+data/data.sqlite3
+data/data.csv
+
+# Logs
+logs/
+*.log
