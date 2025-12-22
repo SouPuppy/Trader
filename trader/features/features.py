@@ -239,3 +239,223 @@ register(FeatureSpec(
     desc='成交量（Volume）'
 ))
 
+# ============================================================================
+# 收益率特征（Returns）
+# ============================================================================
+
+def compute_ret_1d(df: pd.DataFrame) -> pd.Series:
+    """1日收益率: close_price / prev_close - 1"""
+    if df.empty or 'close_price' not in df.columns or 'prev_close' not in df.columns:
+        return pd.Series(dtype='float64', index=df.index)
+    
+    # 处理缺失值：forward fill
+    close_price = df['close_price'].ffill()
+    prev_close = df['prev_close'].ffill()
+    
+    result = close_price / prev_close - 1
+    return result.replace([float('inf'), float('-inf')], pd.NA)
+
+
+register(FeatureSpec(
+    name='ret_1d',
+    dtype='float64',
+    lookback=1,  # 需要前一日数据
+    compute=compute_ret_1d,
+    deps=['close_price', 'prev_close'],
+    desc='1日收益率（1-day Return）'
+))
+
+
+def compute_ret_5d(df: pd.DataFrame) -> pd.Series:
+    """5日收益率: close_price / close_price.shift(5) - 1"""
+    if df.empty or 'close_price' not in df.columns:
+        return pd.Series(dtype='float64', index=df.index)
+    
+    close_price = df['close_price'].ffill()
+    close_5d_ago = close_price.shift(5)
+    
+    result = close_price / close_5d_ago - 1
+    return result.replace([float('inf'), float('-inf')], pd.NA)
+
+
+register(FeatureSpec(
+    name='ret_5d',
+    dtype='float64',
+    lookback=5,  # 需要5天前数据
+    compute=compute_ret_5d,
+    deps=['close_price'],
+    desc='5日收益率（5-day Return）'
+))
+
+
+def compute_ret_20d(df: pd.DataFrame) -> pd.Series:
+    """20日收益率: close_price / close_price.shift(20) - 1"""
+    if df.empty or 'close_price' not in df.columns:
+        return pd.Series(dtype='float64', index=df.index)
+    
+    close_price = df['close_price'].ffill()
+    close_20d_ago = close_price.shift(20)
+    
+    result = close_price / close_20d_ago - 1
+    return result.replace([float('inf'), float('-inf')], pd.NA)
+
+
+register(FeatureSpec(
+    name='ret_20d',
+    dtype='float64',
+    lookback=20,  # 需要20天前数据
+    compute=compute_ret_20d,
+    deps=['close_price'],
+    desc='20日收益率（20-day Return）'
+))
+
+# ============================================================================
+# 日内波动/跳空特征（Intraday）
+# ============================================================================
+
+def compute_range_pct(df: pd.DataFrame) -> pd.Series:
+    """日内波动率: (high_price - low_price) / prev_close"""
+    if df.empty or 'high_price' not in df.columns or 'low_price' not in df.columns or 'prev_close' not in df.columns:
+        return pd.Series(dtype='float64', index=df.index)
+    
+    high_price = df['high_price'].ffill()
+    low_price = df['low_price'].ffill()
+    prev_close = df['prev_close'].ffill()
+    
+    result = (high_price - low_price) / prev_close
+    return result.replace([float('inf'), float('-inf')], pd.NA)
+
+
+register(FeatureSpec(
+    name='range_pct',
+    dtype='float64',
+    lookback=1,  # 需要前一日收盘价
+    compute=compute_range_pct,
+    deps=['high_price', 'low_price', 'prev_close'],
+    desc='日内波动率（Intraday Range Percentage）'
+))
+
+
+def compute_gap_pct(df: pd.DataFrame) -> pd.Series:
+    """跳空幅度: (open_price - prev_close) / prev_close"""
+    if df.empty or 'open_price' not in df.columns or 'prev_close' not in df.columns:
+        return pd.Series(dtype='float64', index=df.index)
+    
+    open_price = df['open_price'].ffill()
+    prev_close = df['prev_close'].ffill()
+    
+    result = (open_price - prev_close) / prev_close
+    return result.replace([float('inf'), float('-inf')], pd.NA)
+
+
+register(FeatureSpec(
+    name='gap_pct',
+    dtype='float64',
+    lookback=1,  # 需要前一日收盘价
+    compute=compute_gap_pct,
+    deps=['open_price', 'prev_close'],
+    desc='跳空幅度（Gap Percentage）'
+))
+
+
+def compute_close_to_open(df: pd.DataFrame) -> pd.Series:
+    """收盘相对开盘: close_price / open_price - 1"""
+    if df.empty or 'close_price' not in df.columns or 'open_price' not in df.columns:
+        return pd.Series(dtype='float64', index=df.index)
+    
+    close_price = df['close_price'].ffill()
+    open_price = df['open_price'].ffill()
+    
+    result = close_price / open_price - 1
+    return result.replace([float('inf'), float('-inf')], pd.NA)
+
+
+register(FeatureSpec(
+    name='close_to_open',
+    dtype='float64',
+    lookback=0,
+    compute=compute_close_to_open,
+    deps=['close_price', 'open_price'],
+    desc='收盘相对开盘（Close to Open）'
+))
+
+# ============================================================================
+# 波动率与成交量特征（Volatility & Liquidity）
+# ============================================================================
+
+def compute_vol_20d(df: pd.DataFrame) -> pd.Series:
+    """20日波动率: rolling 20 日 ret_1d 标准差"""
+    if df.empty or 'close_price' not in df.columns or 'prev_close' not in df.columns:
+        return pd.Series(dtype='float64', index=df.index)
+    
+    # 先计算 ret_1d
+    close_price = df['close_price'].ffill()
+    prev_close = df['prev_close'].ffill()
+    ret_1d = close_price / prev_close - 1
+    
+    # 计算滚动标准差
+    vol_20d = ret_1d.rolling(window=20, min_periods=1).std()
+    return vol_20d.replace([float('inf'), float('-inf')], pd.NA)
+
+
+register(FeatureSpec(
+    name='vol_20d',
+    dtype='float64',
+    lookback=20,  # 需要20天历史数据
+    compute=compute_vol_20d,
+    deps=['close_price', 'prev_close'],
+    desc='20日波动率（20-day Volatility）'
+))
+
+
+def compute_vol_60d(df: pd.DataFrame) -> pd.Series:
+    """60日波动率: rolling 60 日 ret_1d 标准差"""
+    if df.empty or 'close_price' not in df.columns or 'prev_close' not in df.columns:
+        return pd.Series(dtype='float64', index=df.index)
+    
+    # 先计算 ret_1d
+    close_price = df['close_price'].ffill()
+    prev_close = df['prev_close'].ffill()
+    ret_1d = close_price / prev_close - 1
+    
+    # 计算滚动标准差
+    vol_60d = ret_1d.rolling(window=60, min_periods=1).std()
+    return vol_60d.replace([float('inf'), float('-inf')], pd.NA)
+
+
+register(FeatureSpec(
+    name='vol_60d',
+    dtype='float64',
+    lookback=60,  # 需要60天历史数据
+    compute=compute_vol_60d,
+    deps=['close_price', 'prev_close'],
+    desc='60日波动率（60-day Volatility）'
+))
+
+
+def compute_vol_z_20d(df: pd.DataFrame) -> pd.Series:
+    """20日成交量 z-score: (volume - volume_20d_mean) / volume_20d_std"""
+    if df.empty or 'volume' not in df.columns:
+        return pd.Series(dtype='float64', index=df.index)
+    
+    volume = df['volume'].ffill()
+    
+    # 计算滚动均值和标准差
+    volume_mean = volume.rolling(window=20, min_periods=1).mean()
+    volume_std = volume.rolling(window=20, min_periods=1).std()
+    
+    # 计算 z-score，避免除零
+    volume_std_safe = volume_std.replace(0, pd.NA)
+    vol_z_20d = (volume - volume_mean) / volume_std_safe
+    return vol_z_20d.replace([float('inf'), float('-inf')], pd.NA)
+
+
+register(FeatureSpec(
+    name='vol_z_20d',
+    dtype='float64',
+    lookback=20,  # 需要20天历史数据
+    compute=compute_vol_z_20d,
+    deps=['volume'],
+    desc='20日成交量 z-score（20-day Volume Z-score）'
+))
+

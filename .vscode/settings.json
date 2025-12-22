@@ -1,11 +1,13 @@
 {
     "files.exclude": {
         "**/__pycache__": true,
-        "**/*.pyc": true
+        "**/*.pyc": true,
+        "poetry.lock": true,
     },
     "search.exclude": {
         "**/__pycache__": true,
-        "**/*.pyc": true
+        "**/*.pyc": true,
+        "poetry.lock": true,
     }
 }
 
