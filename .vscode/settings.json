@@ -8,6 +8,19 @@
         "**/__pycache__": true,
         "**/*.pyc": true,
         "poetry.lock": true,
+    },
+    "explorer.sortOrder": "type",
+    "explorer.fileNesting.enabled": true,
+    "explorer.fileNesting.patterns": {
+        "*.py": "${capture}.pyc, ${capture}.pyi, ${capture}.pyo",
+        "*.ts": "${capture}.js, ${capture}.js.map, ${capture}.d.ts",
+        "*.js": "${capture}.js.map, ${capture}.min.js",
+        "*.css": "${capture}.css.map, ${capture}.min.css",
+        "*.html": "${capture}.htm",
+        "*.md": "${capture}.mdx",
+        "package.json": "package-lock.json, yarn.lock, pnpm-lock.yaml, poetry.lock, pyproject.toml",
+        "tsconfig.json": "tsconfig.*.json",
+        "*.sh": "${capture}.sh.bak"
     }
 }
 
