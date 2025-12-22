@@ -1,8 +1,10 @@
 """
 Dummy Agent 示例实现
 一个简单的 Agent 实现，用于演示和测试
+支持定投策略（DCA）
 """
-from typing import Dict, List
+from typing import Dict, List, Optional
+from datetime import datetime
 from trader.agent.abstract_agent import AbstractAgent
 from trader.backtest.engine import BacktestEngine
 from trader.logger import get_logger
@@ -14,12 +16,16 @@ class DummyAgent(AbstractAgent):
     """
     Dummy Agent 示例
     使用简单的规则计算 score 和 weight
+    支持定投策略（DCA - Dollar Cost Averaging）
     """
     
     def __init__(self, name: str = "DummyAgent",
                  max_position_weight: float = 0.1,
                  min_score_threshold: float = 0.0,
-                 max_total_weight: float = 1.0):
+                 max_total_weight: float = 1.0,
+                 dca_enabled: bool = True,
+                 dca_amount: float = 1000.0,
+                 dca_frequency: str = "monthly"):
         """
         初始化 Dummy Agent
         
@@ -28,8 +34,16 @@ class DummyAgent(AbstractAgent):
             max_position_weight: 单个股票最大配置比例
             min_score_threshold: 最小 score 阈值
             max_total_weight: 所有股票总配置比例上限
+            dca_enabled: 是否启用定投策略
+            dca_amount: 每次定投金额（元）
+            dca_frequency: 定投频率，"monthly"（每月）或 "daily"（每日）
         """
         super().__init__(name, max_position_weight, min_score_threshold, max_total_weight)
+        self.dca_enabled = dca_enabled
+        self.dca_amount = dca_amount
+        self.dca_frequency = dca_frequency
+        self.last_dca_month: Optional[tuple] = None  # (year, month) 用于记录上次定投月份
+        self.dca_stock_codes: List[str] = []  # 定投的股票代码列表
     
     def score(self, stock_code: str, engine: BacktestEngine) -> float:
         """
@@ -100,19 +114,75 @@ class DummyAgent(AbstractAgent):
         
         return base_weight
     
+    def set_dca_stocks(self, stock_codes: List[str]):
+        """
+        设置定投的股票代码列表
+        
+        Args:
+            stock_codes: 股票代码列表
+        """
+        self.dca_stock_codes = stock_codes
+    
+    def should_dca_today(self, date: str) -> bool:
+        """
+        判断今天是否应该执行定投
+        
+        Args:
+            date: 当前日期
+            
+        Returns:
+            bool: 是否应该执行定投
+        """
+        if not self.dca_enabled or not self.dca_stock_codes:
+            return False
+        
+        # 解析日期
+        try:
+            date_obj = datetime.strptime(date, "%Y-%m-%d")
+            current_month = (date_obj.year, date_obj.month)
+        except ValueError:
+            logger.warning(f"无法解析日期: {date}")
+            return False
+        
+        # 根据定投频率决定是否执行定投
+        if self.dca_frequency == "monthly":
+            # 每月定投：如果是新的月份，执行定投
+            if current_month != self.last_dca_month:
+                self.last_dca_month = current_month
+                return True
+            return False
+        elif self.dca_frequency == "daily":
+            # 每日定投：每个交易日都定投
+            return True
+        else:
+            logger.warning(f"未知的定投频率: {self.dca_frequency}")
+            return False
+    
     def on_date(self, engine: BacktestEngine, date: str):
         """
         每个交易日的回调函数
         
-        可以在这里实现：
-        - 更新内部状态
-        - 记录日志
-        - 执行定期任务等
+        实现定投策略：根据频率买入固定金额
         
         Args:
             engine: 回测引擎
             date: 当前日期
         """
-        # Dummy Agent 不需要特殊处理
-        pass
+        if not self.should_dca_today(date):
+            return
+        
+        # 对每个股票执行定投
+        for stock_code in self.dca_stock_codes:
+            try:
+                # 获取当前价格
+                price = engine.get_current_price(stock_code)
+                if price is None:
+                    logger.warning(f"[{date}] 无法获取 {stock_code} 的价格，跳过定投")
+                    continue
+                
+                # 执行定投买入
+                engine.buy(stock_code, amount=self.dca_amount)
+                logger.info(f"[{date}] 定投买入 {stock_code}: {self.dca_amount:.2f} 元 @ {price:.2f}")
+            except Exception as e:
+                logger.error(f"[{date}] 定投 {stock_code} 时出错: {e}", exc_info=True)
 

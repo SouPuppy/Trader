@@ -1,6 +1,6 @@
 """
-测试 agent 接口的使用示例
-演示 score 和 weight 的区别和使用
+测试 agent 定投策略回测
+使用 Dummy Agent 实现定投策略并生成走势报告
 """
 import sys
 from pathlib import Path
@@ -19,67 +19,105 @@ logger = get_logger(__name__)
 
 
 def test_agent():
-    """测试 agent 的使用"""
-    for line in log_section("测试 agent 接口"):
+    """使用 Dummy Agent 进行定投策略回测"""
+    for line in log_section("Agent 定投策略回测"):
         logger.info(line)
     
-    # 初始化
-    market = Market(price_adjustment=0.01)
-    account = Account(initial_cash=100000.0)
-    engine = BacktestEngine(account, market, enable_report=False)
+    # 配置参数
+    stock_code = "AAPL.O"
+    initial_cash = 10000.0
+    monthly_investment = 1000.0
+    start_date = None  # 从最早日期开始
+    end_date = None    # 到最新日期
     
-    # 创建 Dummy agent
+    logger.info(f"股票代码: {stock_code}")
+    logger.info(f"初始资金: {initial_cash:,.2f} 元")
+    logger.info(f"每月定投: {monthly_investment:,.2f} 元")
+    
+    # 初始化市场、账户和回测引擎
+    market = Market(price_adjustment=0.01)
+    account = Account(initial_cash=initial_cash)
+    engine = BacktestEngine(account, market, enable_report=True)  # 启用报告生成
+    
+    # 获取可用日期
+    available_dates = market.get_available_dates(stock_code)
+    if not available_dates:
+        logger.error(f"未找到股票 {stock_code} 的数据")
+        return
+    
+    logger.info(f"数据范围: {available_dates[0]} 至 {available_dates[-1]}")
+    
+    # 创建 Dummy Agent，启用定投策略
     agent = DummyAgent(
-        name="TestAgent",
-        max_position_weight=0.1,  # 单个股票最多配置10%
-        min_score_threshold=0.0,   # score >= 0 才考虑配置
-        max_total_weight=0.8       # 总配置不超过80%
+        name="DCA_Agent",
+        dca_enabled=True,
+        dca_amount=monthly_investment,
+        dca_frequency="monthly"  # 每月定投
     )
     
-    stock_code = "AAPL.O"
-    stock_codes = [stock_code]
+    # 设置定投的股票代码
+    agent.set_dca_stocks([stock_code])
     
+    # 注册交易日回调：调用 agent 的 on_date 方法执行定投
     def on_trading_day(eng: BacktestEngine, date: str):
         """每个交易日的回调"""
-        if eng.date_index == 0:  # 只在第一天演示
-            logger.info(f"\n[{date}] agent 使用示例:")
-            
-            # 1. 计算 score（研究问题：看好程度）
-            score = agent.score(stock_code, eng)
-            logger.info(f"  Score ({stock_code}): {score:.4f}")
-            logger.info(f"    - Score 表示看好程度/预期收益")
-            logger.info(f"    - 范围: [-1, 1]，正数表示看好，负数表示看空")
-            
-            # 2. 计算 weight（工程+风控问题：实际配置比例）
-            weight = agent.weight(stock_code, score, eng)
-            logger.info(f"  Weight ({stock_code}): {weight:.4f} ({weight*100:.2f}%)")
-            logger.info(f"    - Weight 表示实际资金配置比例")
-            logger.info(f"    - 范围: [0, max_position_weight]")
-            logger.info(f"    - 考虑了风险控制和仓位限制")
-            
-            # 3. 批量计算
-            scores = agent.get_scores(stock_codes, eng)
-            weights = agent.get_weights(scores, eng)
-            logger.info(f"\n  批量计算:")
-            logger.info(f"    Scores: {scores}")
-            logger.info(f"    Weights: {weights}")
-            
-            # 4. 演示 score 和 weight 的区别
-            logger.info(f"\n  Score vs Weight 的区别:")
-            logger.info(f"    - Score: 研究问题，表达'看好程度'")
-            logger.info(f"    - Weight: 工程+风控问题，表达'实际配置多少资金'")
-            logger.info(f"    - 即使 score 很高，weight 也可能因为风控而较小")
+        # 调用 agent 的 on_date 方法，执行定投逻辑
+        agent.on_date(eng, date)
     
     engine.on_date(on_trading_day)
     
-    # 运行回测（只运行1天）
-    available_dates = market.get_available_dates(stock_code)
-    if available_dates:
-        start_date = available_dates[0]
-        engine.run(stock_code, start_date=start_date, end_date=start_date)
+    # 运行回测
+    logger.info("")
+    logger.info("开始回测...")
+    engine.run(stock_code, start_date=start_date, end_date=end_date)
+    
+    # 计算最终结果
+    final_date = end_date if end_date else available_dates[-1]
+    final_price = market.get_price(stock_code, final_date)
+    if final_price is None:
+        final_price = market.get_price(stock_code)  # 使用最新价格
+    
+    if final_price is None:
+        logger.error("无法获取最终价格")
+        return
+    
+    market_prices = {stock_code: final_price}
+    equity = account.equity(market_prices)
+    profit = account.get_total_profit(market_prices)
+    return_pct = account.get_total_return(market_prices)
+    
+    # 计算实际总投入
+    total_invested = initial_cash - account.cash
+    
+    # 输出结果
+    logger.info("")
+    for line in log_section("回测结果"):
+        logger.info(line)
+    
+    position = account.get_position(stock_code)
+    if position:
+        position_value = position["shares"] * final_price
+        position_profit = (final_price - position["average_price"]) * position["shares"]
+        logger.info(f"持仓股数: {position['shares']} 股")
+        logger.info(f"平均成本: {position['average_price']:.2f} 元")
+        logger.info(f"当前价格: {final_price:.2f} 元")
+        logger.info(f"持仓市值: {position_value:,.2f} 元")
+        logger.info(f"持仓盈亏: {position_profit:+,.2f} 元")
+    
+    logger.info(f"初始资金: {initial_cash:,.2f} 元")
+    logger.info(f"实际投入: {total_invested:,.2f} 元")
+    logger.info(f"当前现金: {account.cash:,.2f} 元")
+    logger.info(f"总权益: {equity:,.2f} 元")
+    logger.info(f"总盈亏: {profit:+,.2f} 元")
+    logger.info(f"总收益率: {return_pct:+.2f}%")
+    logger.info(log_separator())
+    
+    # 输出详细账户摘要
+    logger.info("")
+    logger.info(account.summary(market_prices))
     
     logger.info("")
-    for line in log_section("测试完成"):
+    for line in log_section("回测完成"):
         logger.info(line)
 
 
