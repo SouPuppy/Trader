@@ -461,9 +461,11 @@ class TurtleAgent(TradingAgent):
                             close = engine.get_price(stock_code, date)
                             if close:
                                 engine.sell(stock_code, position['shares'])
+                                stop_loss_value = self.stop_loss.get(stock_code)
+                                stop_loss_str = f"{stop_loss_value:.2f}" if stop_loss_value is not None else "N/A"
                                 logger.info(
                                     f"[{date}] {stock_code} 卖出信号: {position['shares']} 股 @ {close:.2f}, "
-                                    f"止损={self.stop_loss.get(stock_code, None):.2f if self.stop_loss.get(stock_code) else 'N/A'}"
+                                    f"止损={stop_loss_str}"
                                 )
                 except Exception as e:
                     logger.error(f"[{date}] 处理 {stock_code} 卖出信号时出错: {e}", exc_info=True)
@@ -544,12 +546,15 @@ class TurtleAgent(TradingAgent):
                         
                         # 记录日志
                         score = buy_scores.get(stock_code, 0.0)
+                        stop_loss_value = self.stop_loss.get(stock_code)
+                        stop_loss_str = f"{stop_loss_value:.2f}" if stop_loss_value is not None else "N/A"
+                        
                         if score >= 1.0:
                             # 买入信号
                             logger.info(
                                 f"[{date}] {stock_code} 买入信号: {amount:.2f} 元 @ {close:.2f}, "
                                 f"入场价={self.entry_price.get(stock_code, close):.2f}, "
-                                f"止损={self.stop_loss.get(stock_code, None):.2f if self.stop_loss.get(stock_code) else 'N/A'}, "
+                                f"止损={stop_loss_str}, "
                                 f"ATR={atr:.2f}, weight={weight:.4f}"
                             )
                         elif score >= 0.5:
@@ -559,7 +564,7 @@ class TurtleAgent(TradingAgent):
                                 f"[{date}] {stock_code} 加仓信号: {amount:.2f} 元 @ {close:.2f}, "
                                 f"总持仓={position['shares'] if position else 0} 股, "
                                 f"持仓次数={self.position_count.get(stock_code, 0)}/{self.max_positions}, "
-                                f"止损={self.stop_loss.get(stock_code, None):.2f if self.stop_loss.get(stock_code) else 'N/A'}, "
+                                f"止损={stop_loss_str}, "
                                 f"weight={weight:.4f}"
                             )
                     except Exception as e:
