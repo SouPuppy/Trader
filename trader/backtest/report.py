@@ -96,6 +96,11 @@ class BacktestReport:
         # 计算持仓市值
         positions_value = 0.0
         positions_detail = {}
+        position_weights = account.get_position_weights(market_prices)
+        position_values = account.get_position_values(market_prices)
+        position_profits = account.get_position_profits(market_prices)
+        position_returns = account.get_position_returns(market_prices)
+        
         for stock_code, position in account.positions.items():
             if stock_code in market_prices:
                 price = market_prices[stock_code]
@@ -106,7 +111,9 @@ class BacktestReport:
                     "average_price": position["average_price"],
                     "current_price": price,
                     "market_value": value,
-                    "profit": (price - position["average_price"]) * position["shares"]
+                    "profit": (price - position["average_price"]) * position["shares"],
+                    "weight": position_weights.get(stock_code, 0.0),
+                    "return_pct": position_returns.get(stock_code, 0.0)
                 }
         
         # 判断是否在测试期
@@ -122,6 +129,10 @@ class BacktestReport:
             "profit": profit,
             "return_pct": return_pct,
             "positions": positions_detail.copy(),
+            "position_weights": position_weights.copy(),
+            "position_values": position_values.copy(),
+            "position_profits": position_profits.copy(),
+            "position_returns": position_returns.copy(),
             "is_test_period": is_test_period
         }
         
@@ -136,24 +147,36 @@ class BacktestReport:
         """
         self.train_test_split_date = split_date
     
-    def generate_report(self, account, stock_code: str, start_date: str, end_date: str):
+    def generate_report(self, account, stock_code: str, start_date: str, end_date: str, 
+                       all_stock_codes: Optional[List[str]] = None):
         """
-        生成完整的回测报告
+        生成完整的回测报告（支持多股票）
         
         Args:
             account: 账户实例
-            stock_code: 股票代码
+            stock_code: 主要股票代码（用于文件名）
             start_date: 开始日期
             end_date: 结束日期
+            all_stock_codes: 所有股票代码列表（用于多资产回测）
         """
         logger.info("生成回测报告...")
+        
+        # 如果没有提供所有股票代码，从账户持仓中提取
+        if all_stock_codes is None:
+            all_stock_codes = list(account.positions.keys())
+            # 如果持仓为空，从交易记录中提取
+            if not all_stock_codes:
+                all_stock_codes = list(set(trade['stock_code'] for trade in account.trades))
+            # 如果还是没有，使用主要股票代码
+            if not all_stock_codes:
+                all_stock_codes = [stock_code]
         
         # 先生成走势图（需要在 Markdown 中引用）
         chart_file = self._generate_charts(stock_code, start_date, end_date)
         
         # 生成 Markdown 报告（包含图表引用）
         markdown_report = self._generate_markdown_report(
-            account, stock_code, start_date, end_date, chart_file
+            account, stock_code, start_date, end_date, chart_file, all_stock_codes
         )
         
         # 保存 Markdown 报告（使用 title 在文件名中）
@@ -164,7 +187,7 @@ class BacktestReport:
         logger.info(f"Markdown 报告已保存: {report_file}")
         
         # 生成 JSON 报告
-        json_report = self._generate_json_report(account, stock_code, start_date, end_date)
+        json_report = self._generate_json_report(account, stock_code, start_date, end_date, all_stock_codes)
         json_file = self.output_dir / f"backtest_report_{safe_title}_{stock_code}_{start_date}_{end_date}.json"
         with open(json_file, 'w', encoding='utf-8') as f:
             json.dump(json_report, f, indent=2, ensure_ascii=False, default=str)
@@ -172,7 +195,8 @@ class BacktestReport:
         
         return report_file
     
-    def _generate_markdown_report(self, account, stock_code: str, start_date: str, end_date: str, chart_file: Optional[Path] = None) -> str:
+    def _generate_markdown_report(self, account, stock_code: str, start_date: str, end_date: str, 
+                                 chart_file: Optional[Path] = None, all_stock_codes: Optional[List[str]] = None) -> str:
         """使用模板生成 Markdown 报告"""
         # 准备模板数据
         template_data = {
@@ -453,10 +477,16 @@ class BacktestReport:
         lines.append("")
         return lines
     
-    def _generate_json_report(self, account, stock_code: str, start_date: str, end_date: str) -> Dict:
-        """生成 JSON 报告"""
+    def _generate_json_report(self, account, stock_code: str, start_date: str, end_date: str, 
+                              all_stock_codes: Optional[List[str]] = None) -> Dict:
+        """生成 JSON 报告（支持多股票）"""
+        if all_stock_codes is None:
+            all_stock_codes = [stock_code]
+        
         report = {
             "stock_code": stock_code,
+            "all_stock_codes": all_stock_codes,
+            "is_multi_asset": len(all_stock_codes) > 1,
             "start_date": start_date,
             "end_date": end_date,
             "trading_days": len(self.daily_records),
@@ -955,7 +985,7 @@ class BacktestReport:
         }
     
     def _generate_charts(self, stock_code: str, start_date: str, end_date: str) -> Optional[Path]:
-        """生成走势图"""
+        """生成走势图（支持多股票）"""
         if not self.daily_records:
             logger.warning("没有每日记录，无法生成走势图")
             return None
@@ -991,6 +1021,14 @@ class BacktestReport:
             # 如果没有测试期数据，使用全部数据
             display_df = df.copy()
             test_start_equity = self.daily_records[0]['equity']
+        
+        # 检测是否有多个股票
+        all_stock_codes = set()
+        for record in display_df.to_dict('records'):
+            if 'positions' in record and record['positions']:
+                all_stock_codes.update(record['positions'].keys())
+        
+        is_multi_asset = len(all_stock_codes) > 1
         
         # 计算统计信息（基于显示的数据）
         equities = display_df['equity'].tolist()
@@ -1115,10 +1153,39 @@ class BacktestReport:
         # 3. 现金和持仓市值（只显示测试期数据）
         ax3 = axes[2]
         ax3.plot(display_df['date'], display_df['cash'], label='Cash', linewidth=1.5, color='green')
-        ax3.plot(display_df['date'], display_df['positions_value'], label='Positions Value', linewidth=1.5, color='orange')
+        ax3.plot(display_df['date'], display_df['positions_value'], label='Total Positions Value', 
+                linewidth=2, color='orange', linestyle='-')
+        
+        # 添加每支股票的持仓市值曲线（如果有多个股票）
+        # 从 positions 字段中提取每支股票的市值
+        if 'positions' in display_df.columns:
+            # 提取所有股票代码
+            all_stock_codes = set()
+            for positions in display_df['positions']:
+                if isinstance(positions, dict):
+                    all_stock_codes.update(positions.keys())
+            
+            if len(all_stock_codes) > 1:
+                # 为每支股票绘制持仓市值曲线
+                colors = plt.cm.tab10(range(len(all_stock_codes)))
+                stock_colors = {code: colors[i] for i, code in enumerate(sorted(all_stock_codes))}
+                
+                for stock_code in sorted(all_stock_codes):
+                    stock_values = []
+                    for positions in display_df['positions']:
+                        if isinstance(positions, dict) and stock_code in positions:
+                            stock_values.append(positions[stock_code].get('market_value', 0.0))
+                        else:
+                            stock_values.append(0.0)
+                    
+                    if any(v > 0 for v in stock_values):  # 只绘制有持仓的股票
+                        ax3.plot(display_df['date'], stock_values, 
+                               label=f'{stock_code}', linewidth=1.5, 
+                               color=stock_colors[stock_code], alpha=0.7, linestyle='--')
+        
         ax3.set_ylabel('Amount (CNY)', fontsize=10)
-        ax3.set_title('Cash vs Positions Value', fontsize=12)
-        ax3.legend(loc='best')
+        ax3.set_title('Cash vs Positions Value (by Stock)', fontsize=12)
+        ax3.legend(loc='best', fontsize=8, ncol=2)
         ax3.grid(True, alpha=0.3)
         ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
         ax3.xaxis.set_major_locator(mdates.MonthLocator())
@@ -1170,6 +1237,162 @@ class BacktestReport:
         plt.savefig(chart_file, dpi=150, bbox_inches='tight')
         plt.close()
         
+        # 如果是多资产回测，生成额外的多股票图表
+        if is_multi_asset and all_stock_codes:
+            multi_asset_chart_file = self._generate_multi_asset_charts(
+                display_df, all_stock_codes, start_date, end_date, safe_title
+            )
+            if multi_asset_chart_file:
+                logger.info(f"多资产图表已保存: {multi_asset_chart_file}")
+        
         logger.info(f"走势图已保存: {chart_file}")
         return chart_file
+    
+    def _generate_multi_asset_charts(self, display_df: pd.DataFrame, stock_codes: set, 
+                                     start_date: str, end_date: str, safe_title: str) -> Optional[Path]:
+        """
+        生成多资产回测的额外图表
+        
+        Args:
+            display_df: 显示数据 DataFrame
+            stock_codes: 股票代码集合
+            start_date: 开始日期
+            end_date: 结束日期
+            safe_title: 安全的标题字符串
+            
+        Returns:
+            Optional[Path]: 图表文件路径
+        """
+        try:
+            stock_codes = sorted(list(stock_codes))
+            num_stocks = len(stock_codes)
+            
+            if num_stocks == 0:
+                return None
+            
+            logger.info(f"生成多资产图表，包含 {num_stocks} 支股票")
+            
+            # 准备数据：提取每支股票的权重、市值、收益等
+            dates = display_df['date'].tolist()
+            
+            # 提取每支股票的权重序列
+            stock_weights = {code: [] for code in stock_codes}
+            stock_values = {code: [] for code in stock_codes}
+            stock_returns = {code: [] for code in stock_codes}
+            stock_cumulative_returns = {code: [] for code in stock_codes}
+            
+            for _, row in display_df.iterrows():
+                positions = row.get('positions', {})
+                position_weights = row.get('position_weights', {})
+                position_values = row.get('position_values', {})
+                position_returns = row.get('position_returns', {})
+                
+                for code in stock_codes:
+                    stock_weights[code].append(position_weights.get(code, 0.0))
+                    stock_values[code].append(position_values.get(code, 0.0))
+                    stock_returns[code].append(position_returns.get(code, 0.0))
+            
+            # 计算累计收益（相对于初始值）
+            for code in stock_codes:
+                if stock_values[code]:
+                    initial_value = stock_values[code][0] if stock_values[code][0] > 0 else 1.0
+                    cumulative = []
+                    cum_sum = 0.0
+                    for i, val in enumerate(stock_values[code]):
+                        if i == 0:
+                            cumulative.append(0.0)
+                        else:
+                            prev_val = stock_values[code][i-1] if stock_values[code][i-1] > 0 else initial_value
+                            if prev_val > 0:
+                                cum_sum += (val - prev_val) / prev_val * 100
+                            cumulative.append(cum_sum)
+                    stock_cumulative_returns[code] = cumulative
+            
+            # 创建多资产图表：4个子图
+            fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+            fig.suptitle(f'{self.title} - Multi-Asset Analysis ({num_stocks} stocks)', fontsize=16)
+            
+            # 1. 持仓权重变化图（堆叠面积图）
+            ax1 = axes[0, 0]
+            colors = plt.cm.tab10(range(num_stocks))
+            ax1.stackplot(dates, *[stock_weights[code] for code in stock_codes],
+                          labels=stock_codes, alpha=0.7, colors=colors)
+            ax1.set_ylabel('Position Weight', fontsize=10)
+            ax1.set_title('Position Weights Over Time', fontsize=12)
+            ax1.legend(loc='upper left', fontsize=8)
+            ax1.grid(True, alpha=0.3)
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax1.xaxis.set_major_locator(mdates.MonthLocator())
+            plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
+            
+            # 2. 持仓市值变化图
+            ax2 = axes[0, 1]
+            for i, code in enumerate(stock_codes):
+                ax2.plot(dates, stock_values[code], label=code, linewidth=2, color=colors[i])
+            ax2.set_ylabel('Market Value (CNY)', fontsize=10)
+            ax2.set_title('Position Values Over Time', fontsize=12)
+            ax2.legend(loc='best', fontsize=8)
+            ax2.grid(True, alpha=0.3)
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax2.xaxis.set_major_locator(mdates.MonthLocator())
+            plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
+            
+            # 3. 累计收益对比图
+            ax3 = axes[1, 0]
+            for i, code in enumerate(stock_codes):
+                if stock_cumulative_returns[code]:
+                    ax3.plot(dates, stock_cumulative_returns[code], label=code, 
+                            linewidth=2, color=colors[i])
+            ax3.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+            ax3.set_ylabel('Cumulative Return (%)', fontsize=10)
+            ax3.set_xlabel('Date', fontsize=10)
+            ax3.set_title('Cumulative Returns Comparison', fontsize=12)
+            ax3.legend(loc='best', fontsize=8)
+            ax3.grid(True, alpha=0.3)
+            ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax3.xaxis.set_major_locator(mdates.MonthLocator())
+            plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
+            
+            # 4. 最终持仓分布饼图（使用最后一天的持仓）
+            ax4 = axes[1, 1]
+            if display_df.iloc[-1].get('positions'):
+                final_positions = display_df.iloc[-1]['positions']
+                final_weights = display_df.iloc[-1].get('position_weights', {})
+                
+                # 准备饼图数据
+                pie_labels = []
+                pie_sizes = []
+                pie_colors_list = []
+                
+                for i, code in enumerate(stock_codes):
+                    if code in final_weights and final_weights[code] > 0:
+                        pie_labels.append(code)
+                        pie_sizes.append(final_weights[code] * 100)  # 转换为百分比
+                        pie_colors_list.append(colors[i])
+                
+                if pie_sizes:
+                    ax4.pie(pie_sizes, labels=pie_labels, colors=pie_colors_list, 
+                           autopct='%1.1f%%', startangle=90)
+                    ax4.set_title('Final Position Distribution', fontsize=12)
+                else:
+                    ax4.text(0.5, 0.5, 'No positions at end', 
+                            transform=ax4.transAxes, ha='center', va='center', fontsize=10)
+                    ax4.set_title('Final Position Distribution', fontsize=12)
+            else:
+                ax4.text(0.5, 0.5, 'No position data', 
+                        transform=ax4.transAxes, ha='center', va='center', fontsize=10)
+                ax4.set_title('Final Position Distribution', fontsize=12)
+            
+            plt.tight_layout()
+            
+            # 保存多资产图表
+            chart_file = self.output_dir / f"multi_asset_charts_{safe_title}_{start_date}_{end_date}.png"
+            plt.savefig(chart_file, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            return chart_file
+            
+        except Exception as e:
+            logger.error(f"生成多资产图表时出错: {e}", exc_info=True)
+            return None
 

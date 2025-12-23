@@ -66,7 +66,7 @@ class BacktestEngine:
     
     def __init__(self, account: Account, market: Market, enable_report: bool = True, 
                  report_output_dir: Optional[Path] = None, report_title: Optional[str] = None,
-                 train_test_split_ratio: float = 0.7):
+                 train_test_split_ratio: float = 0.7, only_test_period: bool = True):
         """
         初始化回测引擎
         
@@ -77,6 +77,7 @@ class BacktestEngine:
             report_output_dir: 报告输出目录，如果为 None 则使用默认目录
             report_title: 报告标题，用于创建子文件夹和文件名
             train_test_split_ratio: 训练/测试分割比例（默认0.7，即70%用于训练，30%用于测试）
+            only_test_period: 是否只运行测试期（默认True，即只运行测试期的交易，训练期只用于模型训练）
         """
         self.account = account
         self.market = market
@@ -88,6 +89,7 @@ class BacktestEngine:
         self.enable_report = enable_report
         self.train_test_split_ratio = train_test_split_ratio
         self.train_test_split_date: Optional[str] = None  # 训练/测试分割日期（在 run 时计算）
+        self.only_test_period = only_test_period  # 是否只运行测试期
         self.report: Optional[BacktestReport] = None
         if enable_report:
             self.report = BacktestReport(report_output_dir, title=report_title)
@@ -237,30 +239,82 @@ class BacktestEngine:
                     f"分割日期: {self.train_test_split_date}"
                 )
         
-        logger.info(f"开始回测: {start_date} 至 {end_date}, 共 {len(self.trading_dates)} 个交易日")
+        # 确定要遍历的日期
+        # 如果 only_test_period=True，仍然需要遍历训练期的日期（用于模型训练），但不执行交易
+        dates_to_iterate = self.trading_dates
         
-        # 按日期循环
-        for self.date_index, date in enumerate(self.trading_dates):
+        # 确定测试期的日期（用于执行交易和记录报告）
+        test_period_dates = dates_to_iterate
+        if self.only_test_period and self.train_test_split_date:
+            test_period_dates = [d for d in self.trading_dates if d >= self.train_test_split_date]
+            train_dates_count = len(self.trading_dates) - len(test_period_dates)
+            logger.info(
+                f"训练/测试模式: 训练期 {train_dates_count} 个交易日（仅用于模型训练，不执行交易）, "
+                f"测试期 {len(test_period_dates)} 个交易日（执行交易和记录）"
+            )
+        else:
+            logger.info(f"完整回测模式: 运行全部 {len(dates_to_iterate)} 个交易日（训练期和测试期都执行交易）")
+        
+        if not dates_to_iterate:
+            logger.warning("没有可遍历的交易日")
+            return
+        
+        test_start_date = test_period_dates[0] if test_period_dates else dates_to_iterate[0]
+        test_end_date = test_period_dates[-1] if test_period_dates else dates_to_iterate[-1]
+        logger.info(f"开始回测: {dates_to_iterate[0]} 至 {dates_to_iterate[-1]}, 共 {len(dates_to_iterate)} 个交易日")
+        if self.only_test_period and test_period_dates:
+            logger.info(f"测试期范围: {test_start_date} 至 {test_end_date}, 共 {len(test_period_dates)} 个交易日")
+        
+        # 按日期循环（遍历所有日期，但根据 only_test_period 决定是否执行交易）
+        for self.date_index, date in enumerate(dates_to_iterate):
             self.current_date = date
             
-            # 调用每个交易日的回调函数
+            # 判断当前是否在测试期
+            is_test_period = True
+            if self.train_test_split_date:
+                is_test_period = date >= self.train_test_split_date
+            
+            # 调用每个交易日的回调函数（训练期和测试期都调用，用于模型训练）
             for callback in self.on_date_callbacks:
                 try:
                     callback(self, date)
                 except Exception as e:
                     logger.error(f"执行回调函数时出错: {e}", exc_info=True)
             
-            # 执行队列中的行为
-            self._execute_actions()
+            # 决定是否执行交易：
+            # - 如果 only_test_period=True：只在测试期执行交易
+            # - 如果 only_test_period=False：训练期和测试期都执行交易
+            should_execute_trades = True
+            if self.only_test_period:
+                should_execute_trades = is_test_period
             
-            # 记录每日账户状态（用于生成报告）
-            if self.enable_report and self.report:
+            if should_execute_trades:
+                # 执行队列中的行为
+                self._execute_actions()
+            
+            # 只在测试期记录每日账户状态（用于生成报告）
+            if self.enable_report and self.report and is_test_period:
                 # 获取当前所有持仓的市场价格
                 market_prices = {}
                 for stock_code in self.account.positions.keys():
                     price = self.market.get_price(stock_code, date)
                     if price is not None:
                         market_prices[stock_code] = price
+                
+                # 同时获取所有交易股票的价格（用于多资产回测）
+                # 如果账户中有多个持仓，尝试获取所有相关股票的价格
+                if len(self.account.positions) > 1:
+                    # 对于多资产回测，确保获取所有相关股票的价格
+                    all_traded_stocks = set(self.account.positions.keys())
+                    # 从交易记录中提取所有交易过的股票
+                    for trade in self.account.trades:
+                        all_traded_stocks.add(trade['stock_code'])
+                    
+                    for code in all_traded_stocks:
+                        if code not in market_prices:
+                            price = self.market.get_price(code, date)
+                            if price is not None:
+                                market_prices[code] = price
                 
                 # 记录每日状态
                 self.report.record_daily_state(date, self.account, market_prices)
@@ -270,7 +324,17 @@ class BacktestEngine:
         # 生成报告
         if self.enable_report and self.report:
             try:
-                report_file = self.report.generate_report(self.account, stock_code, start_date, end_date)
+                # 提取所有交易过的股票代码（用于多资产回测）
+                all_traded_stocks = set()
+                all_traded_stocks.add(stock_code)  # 添加主要股票代码
+                for trade in self.account.trades:
+                    all_traded_stocks.add(trade['stock_code'])
+                all_traded_stocks = sorted(list(all_traded_stocks))
+                
+                report_file = self.report.generate_report(
+                    self.account, stock_code, start_date, end_date, 
+                    all_stock_codes=all_traded_stocks
+                )
                 logger.info(f"回测报告已生成: {report_file}")
             except Exception as e:
                 logger.error(f"生成报告时出错: {e}", exc_info=True)

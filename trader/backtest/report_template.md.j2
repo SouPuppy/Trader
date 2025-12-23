@@ -17,6 +17,16 @@
 | 总盈亏 | {{ "%+.2f"|format(final_state.profit) }} 元 |
 | 总收益率 | {{ "%+.2f"|format(final_state.return_pct) }}% |
 
+{% if final_state.positions %}
+### 持仓明细
+
+| 股票代码 | 股数 | 成本价 | 现价 | 市值 | 权重 | 盈亏 | 收益率 |
+|----------|------|--------|------|------|------|------|--------|
+{% for stock_code, pos in final_state.positions.items() %}
+| {{ stock_code }} | {{ pos.shares }} | {{ "%.2f"|format(pos.average_price) }} | {{ "%.2f"|format(pos.current_price) }} | {{ "%.2f"|format(pos.market_value) }} | {{ "%.2f"|format(pos.weight * 100) }}% | {{ "%+.2f"|format(pos.profit) }} | {{ "%+.2f"|format(pos.return_pct) }}% |
+{% endfor %}
+{% endif %}
+
 {% if trade_statistics %}
 ## 交易统计
 
@@ -49,20 +59,26 @@
 
 ## 最终持仓
 
-| 项目 | 金额 |
-|------|------|
-| **现金** | {{ "%.2f"|format(final_state.cash) }} 元 |
-| **持仓市值** | {{ "%.2f"|format(final_state.positions_value) }} 元 |
-| **总权益** | {{ "%.2f"|format(final_state.equity) }} 元 |
-| **总盈亏** | {{ "%+.2f"|format(final_state.profit) }} 元 ({{ "%+.2f"|format(final_state.return_pct) }}%) |
+### 现金与持仓总览
+
+| 项目 | 金额 | 占比 |
+|------|------|------|
+| **现金** | {{ "%.2f"|format(final_state.cash) }} 元 | {{ "%.2f"|format((final_state.cash / final_state.equity * 100) if final_state.equity > 0 else 0) }}% |
+| **持仓市值** | {{ "%.2f"|format(final_state.positions_value) }} 元 | {{ "%.2f"|format((final_state.positions_value / final_state.equity * 100) if final_state.equity > 0 else 0) }}% |
+| **总权益** | {{ "%.2f"|format(final_state.equity) }} 元 | 100.00% |
+| **总盈亏** | {{ "%+.2f"|format(final_state.profit) }} 元 | {{ "%+.2f"|format(final_state.return_pct) }}% |
 
 {% if final_state.positions %}
-### 持仓明细
+### 各股票持仓明细
 
+| 股票代码 | 股数 | 成本价 | 现价 | 市值 | 权重 | 盈亏 | 收益率 |
+|----------|------|--------|------|------|------|------|--------|
 {% for stock_code, pos in final_state.positions.items() %}
-**{{ stock_code }}**: {{ pos.shares }} 股 @ 成本 {{ "%.2f"|format(pos.average_price) }}, 现价 {{ "%.2f"|format(pos.current_price) }}, 市值 {{ "%.2f"|format(pos.market_value) }} 元, 盈亏 {{ "%+.2f"|format(pos.profit) }} 元
+| {{ stock_code }} | {{ pos.shares }} | {{ "%.2f"|format(pos.average_price) }} | {{ "%.2f"|format(pos.current_price) }} | {{ "%.2f"|format(pos.market_value) }} | {{ "%.2f"|format(pos.weight * 100) }}% | {{ "%+.2f"|format(pos.profit) }} | {{ "%+.2f"|format(pos.return_pct) }}% |
 {% endfor %}
 {% else %}
+### 持仓明细
+
 (无持仓)
 {% endif %}
 

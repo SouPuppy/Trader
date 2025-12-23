@@ -263,3 +263,112 @@ class Account:
         lines.append(log_separator())
         
         return "\n".join(lines)
+    
+    def get_position_weights(self, market_prices: Dict[str, float]) -> Dict[str, float]:
+        """
+        计算每支股票的持仓权重（占总投资的比例）
+        
+        Args:
+            market_prices: {stock_code: current_price} 当前市场价格字典
+            
+        Returns:
+            Dict[str, float]: {stock_code: weight} 权重字典，权重范围 [0, 1]
+        """
+        equity = self.equity(market_prices)
+        if equity == 0:
+            return {}
+        
+        weights = {}
+        for stock_code, position in self.positions.items():
+            if stock_code in market_prices:
+                current_price = market_prices[stock_code]
+                market_value = position["shares"] * current_price
+                weight = market_value / equity
+                weights[stock_code] = weight
+        
+        return weights
+    
+    def get_position_values(self, market_prices: Dict[str, float]) -> Dict[str, float]:
+        """
+        计算每支股票的持仓市值
+        
+        Args:
+            market_prices: {stock_code: current_price} 当前市场价格字典
+            
+        Returns:
+            Dict[str, float]: {stock_code: market_value} 市值字典
+        """
+        values = {}
+        for stock_code, position in self.positions.items():
+            if stock_code in market_prices:
+                current_price = market_prices[stock_code]
+                market_value = position["shares"] * current_price
+                values[stock_code] = market_value
+        
+        return values
+    
+    def get_position_profits(self, market_prices: Dict[str, float]) -> Dict[str, float]:
+        """
+        计算每支股票的盈亏
+        
+        Args:
+            market_prices: {stock_code: current_price} 当前市场价格字典
+            
+        Returns:
+            Dict[str, float]: {stock_code: profit} 盈亏字典
+        """
+        profits = {}
+        for stock_code, position in self.positions.items():
+            if stock_code in market_prices:
+                current_price = market_prices[stock_code]
+                profit_per_share = current_price - position["average_price"]
+                total_profit = profit_per_share * position["shares"]
+                profits[stock_code] = total_profit
+        
+        return profits
+    
+    def get_position_returns(self, market_prices: Dict[str, float]) -> Dict[str, float]:
+        """
+        计算每支股票的收益率（相对于成本价）
+        
+        Args:
+            market_prices: {stock_code: current_price} 当前市场价格字典
+            
+        Returns:
+            Dict[str, float]: {stock_code: return_pct} 收益率字典（百分比）
+        """
+        returns = {}
+        for stock_code, position in self.positions.items():
+            if stock_code in market_prices:
+                current_price = market_prices[stock_code]
+                cost_price = position["average_price"]
+                if cost_price > 0:
+                    return_pct = ((current_price / cost_price) - 1.0) * 100
+                    returns[stock_code] = return_pct
+        
+        return returns
+    
+    def get_num_positions(self) -> int:
+        """
+        获取持仓股票数量
+        
+        Returns:
+            int: 持仓股票数量
+        """
+        return len(self.positions)
+    
+    def get_trades_by_stock(self) -> Dict[str, List[Dict]]:
+        """
+        按股票代码分组交易记录
+        
+        Returns:
+            Dict[str, List[Dict]]: {stock_code: [trades]} 交易记录字典
+        """
+        trades_by_stock = {}
+        for trade in self.trades:
+            stock_code = trade['stock_code']
+            if stock_code not in trades_by_stock:
+                trades_by_stock[stock_code] = []
+            trades_by_stock[stock_code].append(trade)
+        
+        return trades_by_stock
