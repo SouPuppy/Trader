@@ -64,7 +64,7 @@ class BacktestEngine:
     """回测引擎"""
     
     def __init__(self, account: Account, market: Market, enable_report: bool = True, 
-                 report_output_dir: Optional[Path] = None):
+                 report_output_dir: Optional[Path] = None, report_title: Optional[str] = None):
         """
         初始化回测引擎
         
@@ -73,6 +73,7 @@ class BacktestEngine:
             market: 市场实例
             enable_report: 是否启用报告生成
             report_output_dir: 报告输出目录，如果为 None 则使用默认目录
+            report_title: 报告标题，用于创建子文件夹和文件名
         """
         self.account = account
         self.market = market
@@ -84,7 +85,7 @@ class BacktestEngine:
         self.enable_report = enable_report
         self.report: Optional[BacktestReport] = None
         if enable_report:
-            self.report = BacktestReport(report_output_dir)
+            self.report = BacktestReport(report_output_dir, title=report_title)
     
     def add_action(self, action: Action):
         """

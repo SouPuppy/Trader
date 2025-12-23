@@ -25,19 +25,31 @@ MAIN_SEPARATOR = "=" * REPORT_WIDTH
 class BacktestReport:
     """回测报告生成器"""
     
-    def __init__(self, output_dir: Optional[Path] = None):
+    def __init__(self, output_dir: Optional[Path] = None, title: Optional[str] = None):
         """
         初始化报告生成器
         
         Args:
             output_dir: 输出目录，如果为 None 则使用默认目录
+            title: 报告标题，用于创建子文件夹和文件名
         """
         if output_dir is None:
             from trader.config import PROJECT_ROOT
             output_dir = PROJECT_ROOT / 'output' / 'backtest'
         
-        self.output_dir = Path(output_dir)
+        base_output_dir = Path(output_dir)
+        
+        # 如果有 title，创建子文件夹
+        if title:
+            # 清理 title，移除特殊字符，用于文件夹名
+            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
+            safe_title = safe_title.replace(' ', '_')
+            self.output_dir = base_output_dir / safe_title
+        else:
+            self.output_dir = base_output_dir
+        
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.title = title or "Backtest"
         
         # 记录每日账户状态
         self.daily_records: List[Dict] = []
@@ -128,15 +140,16 @@ class BacktestReport:
             account, stock_code, start_date, end_date, chart_file
         )
         
-        # 保存 Markdown 报告
-        report_file = self.output_dir / f"backtest_report_{stock_code}_{start_date}_{end_date}.md"
+        # 保存 Markdown 报告（使用 title 在文件名中）
+        safe_title = "".join(c for c in self.title if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_')
+        report_file = self.output_dir / f"backtest_report_{safe_title}_{stock_code}_{start_date}_{end_date}.md"
         with open(report_file, 'w', encoding='utf-8') as f:
             f.write(markdown_report)
         logger.info(f"Markdown 报告已保存: {report_file}")
         
         # 生成 JSON 报告
         json_report = self._generate_json_report(account, stock_code, start_date, end_date)
-        json_file = self.output_dir / f"backtest_report_{stock_code}_{start_date}_{end_date}.json"
+        json_file = self.output_dir / f"backtest_report_{safe_title}_{stock_code}_{start_date}_{end_date}.json"
         with open(json_file, 'w', encoding='utf-8') as f:
             json.dump(json_report, f, indent=2, ensure_ascii=False, default=str)
         logger.info(f"JSON 报告已保存: {json_file}")
@@ -147,6 +160,7 @@ class BacktestReport:
         """使用模板生成 Markdown 报告"""
         # 准备模板数据
         template_data = {
+            'title': self.title,
             'stock_code': stock_code,
             'start_date': start_date,
             'end_date': end_date,
@@ -203,6 +217,7 @@ class BacktestReport:
             
             daily_returns, sharpe_info = self._calculate_daily_returns(risk_free_rate_annual=0.0)
             
+            # 基础统计
             template_data['statistics'] = {
                 'max_equity': max(equities),
                 'min_equity': min(equities),
@@ -211,17 +226,57 @@ class BacktestReport:
                 'max_drawdown_pct': max_drawdown
             }
             
+            # 添加夏普比率
             if sharpe_info:
                 template_data['statistics']['sharpe_annual'] = sharpe_info['sharpe_annual']
                 template_data['statistics']['sharpe_daily'] = sharpe_info['sharpe_daily']
+            
+            # 计算 CAGR
+            start_equity = equities[0]
+            end_equity = equities[-1]
+            cagr = self._calculate_cagr(start_equity, end_equity, len(self.daily_records))
+            template_data['statistics']['cagr'] = cagr
+            
+            # 计算 Calmar 比率
+            calmar = self._calculate_calmar(cagr, max_drawdown)
+            template_data['statistics']['calmar'] = calmar
+            
+            # 计算波动率
+            if daily_returns:
+                volatility = self._calculate_volatility(daily_returns)
+                template_data['statistics']['volatility_annual'] = volatility
+            
+            # 计算 Sortino 比率
+            if daily_returns:
+                sortino_info = self._calculate_sortino(daily_returns, risk_free_rate_annual=0.0)
+                if sortino_info:
+                    template_data['statistics']['sortino_annual'] = sortino_info.get('sortino_annual', 0.0)
+                    template_data['statistics']['sortino_daily'] = sortino_info.get('sortino_daily', 0.0)
+            
+            # 计算尾部风险
+            if daily_returns:
+                tail_risk = self._calculate_tail_risk(daily_returns)
+                template_data['statistics'].update(tail_risk)
         else:
             template_data['statistics'] = {
                 'max_equity': account.initial_cash,
                 'min_equity': account.initial_cash,
                 'max_return_pct': 0.0,
                 'min_return_pct': 0.0,
-                'max_drawdown_pct': 0.0
+                'max_drawdown_pct': 0.0,
+                'cagr': 0.0,
+                'calmar': 0.0
             }
+        
+        # 添加交易指标
+        trade_metrics = self._calculate_trade_metrics(account)
+        if trade_metrics:
+            template_data['trade_metrics'] = trade_metrics
+        
+        # 添加执行指标
+        execution_metrics = self._calculate_execution_metrics(account, len(self.daily_records))
+        if execution_metrics:
+            template_data['execution_metrics'] = execution_metrics
         
         # 添加图表文件路径（相对路径，用于 Markdown 中的图片引用）
         if chart_file and chart_file.exists():
@@ -449,6 +504,43 @@ class BacktestReport:
                     "daily_returns": daily_returns,
                     "excess_returns": sharpe_info['excess_returns']
                 }
+            
+            # 添加 CAGR
+            start_equity = equities[0]
+            end_equity = equities[-1]
+            cagr = self._calculate_cagr(start_equity, end_equity, len(self.daily_records))
+            report["statistics"]["cagr"] = cagr
+            
+            # 添加 Calmar 比率
+            calmar = self._calculate_calmar(cagr, max_drawdown)
+            report["statistics"]["calmar"] = calmar
+            
+            # 添加波动率
+            if daily_returns:
+                volatility = self._calculate_volatility(daily_returns)
+                report["statistics"]["volatility_annual"] = volatility
+            
+            # 添加 Sortino 比率
+            if daily_returns:
+                sortino_info = self._calculate_sortino(daily_returns, risk_free_rate_annual=0.0)
+                if sortino_info:
+                    report["statistics"]["sortino_annual"] = sortino_info.get('sortino_annual', 0.0)
+                    report["statistics"]["sortino_daily"] = sortino_info.get('sortino_daily', 0.0)
+            
+            # 添加尾部风险
+            if daily_returns:
+                tail_risk = self._calculate_tail_risk(daily_returns)
+                report["statistics"].update(tail_risk)
+            
+            # 添加交易指标
+            trade_metrics = self._calculate_trade_metrics(account)
+            if trade_metrics:
+                report["trade_metrics"] = trade_metrics
+            
+            # 添加执行指标
+            execution_metrics = self._calculate_execution_metrics(account, len(self.daily_records))
+            if execution_metrics:
+                report["execution_metrics"] = execution_metrics
         
         # 交易记录和每日记录（放在最后，因为可能很大）
         report["trades"] = account.trades
@@ -546,6 +638,306 @@ class BacktestReport:
         
         return daily_returns, sharpe_info
     
+    def _calculate_cagr(self, start_equity: float, end_equity: float, trading_days: int) -> float:
+        """
+        计算年化收益率 (CAGR)
+        
+        Args:
+            start_equity: 初始权益
+            end_equity: 最终权益
+            trading_days: 交易日数
+            
+        Returns:
+            float: CAGR (百分比)
+        """
+        if start_equity <= 0 or trading_days <= 0:
+            return 0.0
+        
+        # CAGR = (End/Start)^(252/TradingDays) - 1
+        years = trading_days / 252.0
+        if years <= 0:
+            return 0.0
+        
+        cagr = (math.pow(end_equity / start_equity, 1.0 / years) - 1.0) * 100
+        return cagr
+    
+    def _calculate_volatility(self, daily_returns: List[float]) -> float:
+        """
+        计算年化波动率
+        
+        Args:
+            daily_returns: 日收益率序列
+            
+        Returns:
+            float: 年化波动率 (百分比)
+        """
+        if len(daily_returns) < 2:
+            return 0.0
+        
+        # 计算日收益率的标准差
+        mean_return = sum(daily_returns) / len(daily_returns)
+        variance = sum((r - mean_return) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
+        std_daily = math.sqrt(variance) if variance > 0 else 0.0
+        
+        # 年化波动率 = 日波动率 * sqrt(252)
+        volatility_annual = std_daily * math.sqrt(252) * 100
+        return volatility_annual
+    
+    def _calculate_sortino(self, daily_returns: List[float], risk_free_rate_annual: float = 0.0) -> Dict:
+        """
+        计算 Sortino 比率（只惩罚下行波动）
+        
+        Args:
+            daily_returns: 日收益率序列
+            risk_free_rate_annual: 年化无风险利率
+            
+        Returns:
+            Dict: Sortino 比率信息
+        """
+        if len(daily_returns) < 2:
+            return {}
+        
+        # 日化无风险利率
+        if risk_free_rate_annual == 0.0:
+            risk_free_rate_daily = 0.0
+        else:
+            risk_free_rate_daily = math.pow(1 + risk_free_rate_annual, 1/252) - 1
+        
+        # 计算超额收益
+        excess_returns = [r - risk_free_rate_daily for r in daily_returns]
+        mean_excess_return = sum(excess_returns) / len(excess_returns)
+        
+        # 只计算下行波动（负的超额收益）
+        downside_returns = [r for r in excess_returns if r < 0]
+        if len(downside_returns) < 2:
+            return {
+                'sortino_daily': 0.0,
+                'sortino_annual': 0.0,
+                'downside_std': 0.0
+            }
+        
+        # 下行标准差
+        downside_variance = sum(r ** 2 for r in downside_returns) / (len(downside_returns) - 1)
+        downside_std = math.sqrt(downside_variance) if downside_variance > 0 else 0.0
+        
+        # Sortino 比率
+        if downside_std > 0:
+            sortino_daily = mean_excess_return / downside_std
+        else:
+            sortino_daily = 0.0
+        
+        # 年化 Sortino 比率
+        sortino_annual = math.sqrt(252) * sortino_daily
+        
+        return {
+            'sortino_daily': sortino_daily,
+            'sortino_annual': sortino_annual,
+            'downside_std': downside_std,
+            'mean_excess_return': mean_excess_return
+        }
+    
+    def _calculate_calmar(self, cagr: float, max_drawdown: float):
+        """
+        计算 Calmar 比率 (CAGR / Max Drawdown)
+        
+        Args:
+            cagr: 年化收益率 (百分比)
+            max_drawdown: 最大回撤 (百分比)
+            
+        Returns:
+            float 或 None: Calmar 比率（None 表示无穷大）
+        """
+        if max_drawdown == 0:
+            # 使用 None 表示无穷大，而不是 float('inf')，因为 Jinja2 模板不支持 float('inf')
+            return None if cagr != 0 else 0.0
+        return cagr / max_drawdown
+    
+    def _calculate_tail_risk(self, daily_returns: List[float]) -> Dict:
+        """
+        计算尾部风险指标 (VaR 和 CVaR)
+        
+        Args:
+            daily_returns: 日收益率序列
+            
+        Returns:
+            Dict: 包含 VaR 和 CVaR 的字典
+        """
+        if not daily_returns:
+            return {}
+        
+        sorted_returns = sorted(daily_returns)
+        n = len(sorted_returns)
+        
+        # VaR 95% 和 99%
+        var_95_idx = int(n * 0.05)
+        var_99_idx = int(n * 0.01)
+        
+        var_95 = sorted_returns[var_95_idx] if var_95_idx < n else sorted_returns[0]
+        var_99 = sorted_returns[var_99_idx] if var_99_idx < n else sorted_returns[0]
+        
+        # CVaR (Conditional VaR) = 尾部损失的期望值
+        cvar_95 = sum(sorted_returns[:var_95_idx+1]) / (var_95_idx + 1) if var_95_idx >= 0 else 0.0
+        cvar_99 = sum(sorted_returns[:var_99_idx+1]) / (var_99_idx + 1) if var_99_idx >= 0 else 0.0
+        
+        # 极端日跌幅分位数（最差的5%和1%）
+        extreme_loss_5pct_idx = max(0, int(n * 0.05) - 1)
+        extreme_loss_1pct_idx = max(0, int(n * 0.01) - 1)
+        extreme_loss_5pct = sorted_returns[extreme_loss_5pct_idx] if n > 0 else 0.0
+        extreme_loss_1pct = sorted_returns[extreme_loss_1pct_idx] if n > 0 else 0.0
+        
+        return {
+            'var_95': var_95 * 100,  # 转换为百分比
+            'var_99': var_99 * 100,
+            'cvar_95': cvar_95 * 100,
+            'cvar_99': cvar_99 * 100,
+            'extreme_loss_5pct': extreme_loss_5pct * 100,
+            'extreme_loss_1pct': extreme_loss_1pct * 100
+        }
+    
+    def _calculate_trade_metrics(self, account) -> Dict:
+        """
+        计算交易相关指标
+        
+        Args:
+            account: 账户实例
+            
+        Returns:
+            Dict: 交易指标
+        """
+        if not account.trades:
+            return {}
+        
+        sell_trades = [t for t in account.trades if t['type'] == 'sell']
+        buy_trades = [t for t in account.trades if t['type'] == 'buy']
+        
+        # Hit Rate (胜率)
+        profitable_trades = [t for t in sell_trades if t.get('profit', 0) > 0]
+        hit_rate = len(profitable_trades) / len(sell_trades) * 100 if sell_trades else 0.0
+        
+        # Profit Factor (总盈利 / 总亏损)
+        total_profit = sum(t.get('profit', 0) for t in sell_trades if t.get('profit', 0) > 0)
+        total_loss = abs(sum(t.get('profit', 0) for t in sell_trades if t.get('profit', 0) < 0))
+        # 使用 None 表示无穷大，而不是 float('inf')，因为 Jinja2 模板不支持 float('inf')
+        profit_factor = total_profit / total_loss if total_loss > 0 else (None if total_profit > 0 else 0.0)
+        
+        # Average Trade Return (单笔平均收益)
+        avg_trade_return = sum(t.get('profit', 0) for t in sell_trades) / len(sell_trades) if sell_trades else 0.0
+        
+        # 计算持仓周期（需要分析买入和卖出配对）
+        holding_periods = []
+        position_open_dates = {}  # {stock_code: [(date, shares)]}
+        
+        for trade in sorted(account.trades, key=lambda t: t['date'] if isinstance(t['date'], datetime) else pd.to_datetime(t['date'])):
+            stock_code = trade['stock_code']
+            date = trade['date'] if isinstance(trade['date'], datetime) else pd.to_datetime(trade['date'])
+            
+            if trade['type'] == 'buy':
+                if stock_code not in position_open_dates:
+                    position_open_dates[stock_code] = []
+                position_open_dates[stock_code].append((date, trade['shares']))
+            else:  # sell
+                if stock_code in position_open_dates and position_open_dates[stock_code]:
+                    # FIFO 配对
+                    remaining_shares = trade['shares']
+                    while remaining_shares > 0 and position_open_dates[stock_code]:
+                        open_date, open_shares = position_open_dates[stock_code][0]
+                        if open_shares <= remaining_shares:
+                            holding_periods.append((date - open_date).days)
+                            remaining_shares -= open_shares
+                            position_open_dates[stock_code].pop(0)
+                        else:
+                            holding_periods.append((date - open_date).days)
+                            position_open_dates[stock_code][0] = (open_date, open_shares - remaining_shares)
+                            remaining_shares = 0
+        
+        avg_holding_period = sum(holding_periods) / len(holding_periods) if holding_periods else 0.0
+        
+        return {
+            'hit_rate': hit_rate,
+            'profit_factor': profit_factor,
+            'avg_trade_return': avg_trade_return,
+            'total_profit': total_profit,
+            'total_loss': total_loss,
+            'profitable_trades': len(profitable_trades),
+            'losing_trades': len(sell_trades) - len(profitable_trades),
+            'avg_holding_period_days': avg_holding_period
+        }
+    
+    def _calculate_execution_metrics(self, account, trading_days: int) -> Dict:
+        """
+        计算执行相关指标
+        
+        Args:
+            account: 账户实例
+            trading_days: 交易日数
+            
+        Returns:
+            Dict: 执行指标
+        """
+        if not account.trades or trading_days == 0:
+            return {}
+        
+        # Turnover (换手率) = 总交易金额 / 平均权益
+        total_trade_amount = sum(t['cost'] for t in account.trades if t['type'] == 'buy')
+        total_trade_amount += sum(t.get('revenue', 0) for t in account.trades if t['type'] == 'sell')
+        
+        # 计算平均权益
+        if self.daily_records:
+            avg_equity = sum(r['equity'] for r in self.daily_records) / len(self.daily_records)
+            turnover = (total_trade_amount / 2) / avg_equity if avg_equity > 0 else 0.0  # 除以2因为买入和卖出都计算了
+        else:
+            turnover = 0.0
+        
+        # Trading Frequency (交易频率)
+        total_trades = len(account.trades)
+        trades_per_day = total_trades / trading_days if trading_days > 0 else 0.0
+        trades_per_week = trades_per_day * 5  # 假设一周5个交易日
+        
+        return {
+            'turnover': turnover * 100,  # 转换为百分比
+            'trades_per_day': trades_per_day,
+            'trades_per_week': trades_per_week,
+            'total_trade_amount': total_trade_amount
+        }
+    
+    def _calculate_alpha_beta(self, daily_returns: List[float], benchmark_returns: Optional[List[float]] = None) -> Dict:
+        """
+        计算 Alpha 和 Beta（相对基准）
+        
+        Args:
+            daily_returns: 策略日收益率序列
+            benchmark_returns: 基准日收益率序列（如果为 None，则无法计算）
+            
+        Returns:
+            Dict: Alpha 和 Beta 信息
+        """
+        if benchmark_returns is None or len(daily_returns) != len(benchmark_returns) or len(daily_returns) < 2:
+            return {}
+        
+        # 计算协方差和方差
+        mean_strategy = sum(daily_returns) / len(daily_returns)
+        mean_benchmark = sum(benchmark_returns) / len(benchmark_returns)
+        
+        covariance = sum((daily_returns[i] - mean_strategy) * (benchmark_returns[i] - mean_benchmark) 
+                          for i in range(len(daily_returns))) / (len(daily_returns) - 1)
+        
+        benchmark_variance = sum((r - mean_benchmark) ** 2 for r in benchmark_returns) / (len(benchmark_returns) - 1)
+        
+        # Beta = Cov(strategy, benchmark) / Var(benchmark)
+        beta = covariance / benchmark_variance if benchmark_variance > 0 else 0.0
+        
+        # Alpha = mean_strategy - beta * mean_benchmark (日频)
+        alpha_daily = mean_strategy - beta * mean_benchmark
+        
+        # 年化 Alpha 和 Beta
+        alpha_annual = alpha_daily * 252 * 100  # 转换为百分比
+        
+        return {
+            'alpha_daily': alpha_daily,
+            'alpha_annual': alpha_annual,
+            'beta': beta
+        }
+    
     def _generate_charts(self, stock_code: str, start_date: str, end_date: str) -> Optional[Path]:
         """生成走势图"""
         if not self.daily_records:
@@ -620,8 +1012,8 @@ class BacktestReport:
         
         # 创建图表 - 5个子图：权益、回撤、现金/持仓、收益率、滚动夏普
         fig, axes = plt.subplots(5, 1, figsize=(12, 14))
-        # 使用英文标题避免字体问题
-        fig.suptitle(f'Backtest Report - {stock_code} ({start_date} to {end_date})', fontsize=14)
+        # 使用 title 和股票代码作为图表标题
+        fig.suptitle(f'{self.title} - {stock_code} ({start_date} to {end_date})', fontsize=14)
         
         # 1. 账户权益曲线
         ax1 = axes[0]
@@ -700,8 +1092,9 @@ class BacktestReport:
         
         plt.tight_layout()
         
-        # 保存图表
-        chart_file = self.output_dir / f"backtest_charts_{stock_code}_{start_date}_{end_date}.png"
+        # 保存图表（使用 title 在文件名中）
+        safe_title = "".join(c for c in self.title if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_')
+        chart_file = self.output_dir / f"backtest_charts_{safe_title}_{stock_code}_{start_date}_{end_date}.png"
         plt.savefig(chart_file, dpi=150, bbox_inches='tight')
         plt.close()
         

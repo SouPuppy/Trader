@@ -1,7 +1,6 @@
 """
-DCA (Dollar Cost Averaging) 定投策略
-对 AAPL.O 进行定投，初始资金 10,000 元
-使用回测引擎，支持行为队列和市场日期循环
+DCA (Dollar Cost Averaging) 定投策略回测示例
+使用 DCAAgent 实现定投策略
 """
 import sys
 from pathlib import Path
@@ -11,7 +10,7 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from datetime import datetime
+from trader.agent.agent_dca import DCAAgent
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
@@ -22,13 +21,13 @@ logger = get_logger(__name__)
 
 def dca_strategy(
     stock_code: str = "AAPL.O",
-    initial_cash: float = 10000.0,
-    monthly_investment: float = 1000.0,
+    initial_cash: float = 1000000.0,
+    monthly_investment: float = 100000.0,
     start_date: str = None,
     end_date: str = None
 ):
     """
-    定投策略回测
+    定投策略回测（使用 DCAAgent）
     
     Args:
         stock_code: 股票代码
@@ -37,19 +36,19 @@ def dca_strategy(
         start_date: 开始日期（格式: YYYY-MM-DD），如果为 None 则从最早可用日期开始
         end_date: 结束日期（格式: YYYY-MM-DD），如果为 None 则到最新日期
     """
-    for line in log_section("DCA 定投策略回测"):
+    for line in log_section("DCA 定投策略回测（使用 Agent）"):
         logger.info(line)
     logger.info(f"股票代码: {stock_code}")
     logger.info(f"初始资金: {initial_cash:,.2f} 元")
     logger.info(f"每月定投: {monthly_investment:,.2f} 元")
     
     # 初始化市场、账户和回测引擎
-    # 注意：如果价格数据单位不对（如价格过高），可以调整 price_adjustment
-    # 例如：如果价格需要除以100，设置 price_adjustment=0.01
-    # 如果价格需要除以1000，设置 price_adjustment=0.001
-    market = Market(price_adjustment=0.01)  # 假设价格单位是分，需要除以100
+    market = Market(price_adjustment=0.01)
     account = Account(initial_cash=initial_cash)
-    engine = BacktestEngine(account, market)
+    
+    # 生成报告标题（包含策略名称和参数，使用英文）
+    report_title = f"DCA_Strategy_{stock_code}_monthly{int(monthly_investment)}"
+    engine = BacktestEngine(account, market, report_title=report_title)
     
     # 获取可用日期（用于显示数据范围）
     available_dates = market.get_available_dates(stock_code)
@@ -59,42 +58,26 @@ def dca_strategy(
     
     logger.info(f"数据范围: {available_dates[0]} 至 {available_dates[-1]}")
     
-    # 定投策略：每月第一个交易日买入
-    last_month = None
-    investment_count = [0]  # 使用列表以便在回调中修改
+    # 创建 DCA Agent
+    agent = DCAAgent(
+        name="DCA_Strategy",
+        monthly_investment=monthly_investment,
+        dca_frequency="monthly"
+    )
     
+    # 设置定投的股票代码
+    agent.set_dca_stocks([stock_code])
+    
+    # 注册交易日回调：调用 agent 的 on_date 方法执行定投
     def on_trading_day(eng: BacktestEngine, date: str):
-        """每个交易日的回调函数"""
-        nonlocal last_month  # 必须在函数开头声明
-        
-        # 解析日期，获取年月
-        date_obj = datetime.strptime(date, "%Y-%m-%d")
-        current_month = (date_obj.year, date_obj.month)
-        
-        # 如果是新的月份，提交定投买入订单
-        if current_month != last_month:
-            # 获取当日价格
-            price = eng.get_current_price(stock_code)
-            
-            if price is None:
-                logger.warning(f"日期 {date} 无法获取价格，跳过")
-                return
-            
-            # 提交买入订单（按金额买入）
-            eng.buy(stock_code, amount=monthly_investment)
-            investment_count[0] += 1
-            
-            logger.info(
-                f"[{date}] 提交定投买入订单: {monthly_investment:.2f} 元 @ {price:.2f}"
-            )
-            
-            # 更新月份
-            last_month = current_month
+        """每个交易日的回调"""
+        agent.on_date(eng, date)
     
-    # 注册交易日回调
     engine.on_date(on_trading_day)
     
     # 运行回测
+    logger.info("")
+    logger.info("开始回测...")
     engine.run(stock_code, start_date=start_date, end_date=end_date)
     
     # 计算最终结果
@@ -118,7 +101,7 @@ def dca_strategy(
     logger.info("")
     for line in log_section("回测结果"):
         logger.info(line)
-    logger.info(f"定投次数: {investment_count[0]}")
+    logger.info(f"定投次数: {agent.investment_count}")
     logger.info(f"初始资金: {initial_cash:,.2f} 元")
     logger.info(f"实际投入: {total_invested:,.2f} 元")
     logger.info(f"当前现金: {account.cash:,.2f} 元")
@@ -147,8 +130,9 @@ if __name__ == "__main__":
     # 执行定投策略
     dca_strategy(
         stock_code="AAPL.O",
-        initial_cash=10000.0,
-        monthly_investment=1000.0,
+        initial_cash=1000000.0,
+        monthly_investment=100000.0,
         start_date=None,  # 从最早日期开始
         end_date=None     # 到最新日期
     )
+

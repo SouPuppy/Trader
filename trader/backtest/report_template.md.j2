@@ -1,4 +1,4 @@
-# 回测报告
+# {{ title }}
 
 **股票代码:** {{ stock_code }}  
 **回测期间:** {{ start_date }} 至 {{ end_date }}  
@@ -49,12 +49,85 @@
 
 ## 最终持仓
 
+| 项目 | 金额 |
+|------|------|
+| **现金** | {{ "%.2f"|format(final_state.cash) }} 元 |
+| **持仓市值** | {{ "%.2f"|format(final_state.positions_value) }} 元 |
+| **总权益** | {{ "%.2f"|format(final_state.equity) }} 元 |
+| **总盈亏** | {{ "%+.2f"|format(final_state.profit) }} 元 ({{ "%+.2f"|format(final_state.return_pct) }}%) |
+
 {% if final_state.positions %}
+### 持仓明细
+
 {% for stock_code, pos in final_state.positions.items() %}
-**{{ stock_code }}**: {{ pos.shares }} 股 @ 成本 {{ "%.2f"|format(pos.average_price) }}, 现价 {{ "%.2f"|format(pos.current_price) }}, 市值 {{ "%.2f"|format(pos.market_value) }}, 盈亏 {{ "%+.2f"|format(pos.profit) }}
+**{{ stock_code }}**: {{ pos.shares }} 股 @ 成本 {{ "%.2f"|format(pos.average_price) }}, 现价 {{ "%.2f"|format(pos.current_price) }}, 市值 {{ "%.2f"|format(pos.market_value) }} 元, 盈亏 {{ "%+.2f"|format(pos.profit) }} 元
 {% endfor %}
 {% else %}
 (无持仓)
+{% endif %}
+
+---
+
+## 交易表现 (Return)
+
+| 指标 | 数值 |
+|------|------|
+| 总收益率 (Total Return) | {{ "%+.2f"|format(final_state.return_pct) }}% |
+{% if statistics.cagr is defined %}
+| 年化收益率 (CAGR) | {{ "%+.2f"|format(statistics.cagr) }}% |
+{% endif %}
+{% if trade_metrics %}
+| 胜率 (Hit Rate) | {{ "%.2f"|format(trade_metrics.hit_rate) }}% |
+| 盈亏比 (Profit Factor) | {{ "%.2f"|format(trade_metrics.profit_factor) if trade_metrics.profit_factor is not none else 'N/A' }} |
+| 单笔平均收益 (Avg Trade Return) | {{ "%+.2f"|format(trade_metrics.avg_trade_return) }} 元 |
+{% endif %}
+
+---
+
+## 风险与稳健性 (Risk / Robustness)
+
+| 指标 | 数值 |
+|------|------|
+| 最大回撤 (Max Drawdown) | {{ "%.2f"|format(statistics.max_drawdown_pct) }}% |
+{% if statistics.volatility_annual is defined %}
+| 年化波动率 (Volatility) | {{ "%.2f"|format(statistics.volatility_annual) }}% |
+{% endif %}
+{% if statistics.sharpe_annual is defined %}
+| 年化夏普比率 (Sharpe) | {{ "%.4f"|format(statistics.sharpe_annual) }} |
+| 日频夏普比率 (Sharpe Daily) | {{ "%.4f"|format(statistics.sharpe_daily) }} |
+{% endif %}
+{% if statistics.sortino_annual is defined %}
+| 年化 Sortino 比率 | {{ "%.4f"|format(statistics.sortino_annual) }} |
+| 日频 Sortino 比率 | {{ "%.4f"|format(statistics.sortino_daily) }} |
+{% endif %}
+{% if statistics.calmar is defined %}
+| Calmar 比率 (CAGR/MaxDD) | {{ "%.4f"|format(statistics.calmar) if statistics.calmar is not none else 'N/A' }} |
+{% endif %}
+{% if statistics.var_95 is defined %}
+### 尾部风险 (Tail Risk)
+| 指标 | 数值 |
+|------|------|
+| VaR 95% | {{ "%.2f"|format(statistics.var_95) }}% |
+| VaR 99% | {{ "%.2f"|format(statistics.var_99) }}% |
+| CVaR 95% | {{ "%.2f"|format(statistics.cvar_95) }}% |
+| CVaR 99% | {{ "%.2f"|format(statistics.cvar_99) }}% |
+| 极端日跌幅 (5%分位) | {{ "%.2f"|format(statistics.extreme_loss_5pct) }}% |
+| 极端日跌幅 (1%分位) | {{ "%.2f"|format(statistics.extreme_loss_1pct) }}% |
+{% endif %}
+
+---
+
+## 执行与成本 (Execution)
+
+{% if execution_metrics %}
+| 指标 | 数值 |
+|------|------|
+| 换手率 (Turnover) | {{ "%.2f"|format(execution_metrics.turnover) }}% |
+| 交易频率 (每日) | {{ "%.2f"|format(execution_metrics.trades_per_day) }} 次/日 |
+| 交易频率 (每周) | {{ "%.2f"|format(execution_metrics.trades_per_week) }} 次/周 |
+{% if trade_metrics and trade_metrics.avg_holding_period_days is defined %}
+| 平均持仓周期 | {{ "%.1f"|format(trade_metrics.avg_holding_period_days) }} 天 |
+{% endif %}
 {% endif %}
 
 ---
@@ -67,11 +140,6 @@
 | 最低权益 | {{ "%.2f"|format(statistics.min_equity) }} 元 |
 | 最高收益率 | {{ "%+.2f"|format(statistics.max_return_pct) }}% |
 | 最低收益率 | {{ "%+.2f"|format(statistics.min_return_pct) }}% |
-| 最大回撤 | {{ "%.2f"|format(statistics.max_drawdown_pct) }}% |
-{% if statistics.sharpe_annual is defined %}
-| 年化夏普比率 | {{ "%.4f"|format(statistics.sharpe_annual) }} |
-| 日频夏普比率 | {{ "%.4f"|format(statistics.sharpe_daily) }} |
-{% endif %}
 
 ---
 

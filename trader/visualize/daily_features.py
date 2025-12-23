@@ -432,7 +432,7 @@ def plot_feature_trends(
                     if len(symbols) > 1:
                         logger.warning(f"  以下股票的数据可能相同: {symbols}")
         
-        logger.info(f"绘制特征 {feature_name} 的趋势图（{len(valid_symbols)} 个symbols: {valid_symbols}）...")
+        logger.info(f"绘制特征 {feature_name} 的趋势图（{len(valid_symbols)} 个symbols）...")
         
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
         
