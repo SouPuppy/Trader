@@ -1,0 +1,84 @@
+# 回测报告
+
+**股票代码:** {{ stock_code }}  
+**回测期间:** {{ start_date }} 至 {{ end_date }}  
+**交易日数:** {{ trading_days }}
+
+---
+
+## 账户摘要
+
+| 项目 | 金额 |
+|------|------|
+| 初始资金 | {{ "%.2f"|format(initial_cash) }} 元 |
+| 最终现金 | {{ "%.2f"|format(final_state.cash) }} 元 |
+| 最终持仓市值 | {{ "%.2f"|format(final_state.positions_value) }} 元 |
+| 最终总权益 | {{ "%.2f"|format(final_state.equity) }} 元 |
+| 总盈亏 | {{ "%+.2f"|format(final_state.profit) }} 元 |
+| 总收益率 | {{ "%+.2f"|format(final_state.return_pct) }}% |
+
+{% if trade_statistics %}
+## 交易统计
+
+| 项目 | 数值 |
+|------|------|
+| 总交易次数 | {{ trade_statistics.total_trades }} 次 |
+| 买入次数 | {{ trade_statistics.buy_count }} 次 |
+| 卖出次数 | {{ trade_statistics.sell_count }} 次 |
+| 买入总成本 | {{ "%.2f"|format(trade_statistics.total_buy_cost) }} 元 |
+| 卖出总收入 | {{ "%.2f"|format(trade_statistics.total_sell_revenue) }} 元 |
+| 已实现盈亏 | {{ "%+.2f"|format(trade_statistics.realized_profit) }} 元 |
+
+{% endif %}
+
+---
+
+## 交易记录
+
+{% if trades %}
+| 序号 | 日期 | 类型 | 股票代码 | 股数 | 价格 | 成本/收入 | 利润 |
+|------|------|------|----------|------|------|-----------|------|
+{% for trade in trades %}
+| {{ loop.index }} | {{ trade.date|strftime }} | {% if trade.type == 'buy' %}买入{% else %}卖出{% endif %} | {{ trade.stock_code }} | {{ trade.shares }} | {{ "%.2f"|format(trade.price) }} | {% if trade.type == 'buy' %}{{ "%.2f"|format(trade.cost) }}{% else %}{{ "%.2f"|format(trade.revenue) }}{% endif %} | {% if trade.type == 'sell' %}{{ "%+.2f"|format(trade.profit) }}{% else %}-{% endif %} |
+{% endfor %}
+{% else %}
+(无交易记录)
+{% endif %}
+
+---
+
+## 最终持仓
+
+{% if final_state.positions %}
+{% for stock_code, pos in final_state.positions.items() %}
+**{{ stock_code }}**: {{ pos.shares }} 股 @ 成本 {{ "%.2f"|format(pos.average_price) }}, 现价 {{ "%.2f"|format(pos.current_price) }}, 市值 {{ "%.2f"|format(pos.market_value) }}, 盈亏 {{ "%+.2f"|format(pos.profit) }}
+{% endfor %}
+{% else %}
+(无持仓)
+{% endif %}
+
+---
+
+## 统计信息
+
+| 指标 | 数值 |
+|------|------|
+| 最高权益 | {{ "%.2f"|format(statistics.max_equity) }} 元 |
+| 最低权益 | {{ "%.2f"|format(statistics.min_equity) }} 元 |
+| 最高收益率 | {{ "%+.2f"|format(statistics.max_return_pct) }}% |
+| 最低收益率 | {{ "%+.2f"|format(statistics.min_return_pct) }}% |
+| 最大回撤 | {{ "%.2f"|format(statistics.max_drawdown_pct) }}% |
+{% if statistics.sharpe_annual is defined %}
+| 年化夏普比率 | {{ "%.4f"|format(statistics.sharpe_annual) }} |
+| 日频夏普比率 | {{ "%.4f"|format(statistics.sharpe_daily) }} |
+{% endif %}
+
+---
+
+{% if chart_file %}
+## 走势图
+
+![回测走势图]({{ chart_file }})
+{% endif %}
+
+

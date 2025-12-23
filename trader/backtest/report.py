@@ -10,9 +10,16 @@ from typing import List, Dict, Optional, Tuple
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from trader.logger import get_logger
 
+
 logger = get_logger(__name__)
+
+# 报告格式常量
+REPORT_WIDTH = 80
+SECTION_SEPARATOR = "-" * REPORT_WIDTH
+MAIN_SEPARATOR = "=" * REPORT_WIDTH
 
 
 class BacktestReport:
@@ -34,6 +41,31 @@ class BacktestReport:
         
         # 记录每日账户状态
         self.daily_records: List[Dict] = []
+        
+        # 初始化 Jinja2 环境
+        template_dir = Path(__file__).parent
+        self.jinja_env = Environment(
+            loader=FileSystemLoader(str(template_dir)),
+            autoescape=select_autoescape(['html', 'xml']),
+            trim_blocks=True,
+            lstrip_blocks=True
+        )
+        
+        # 添加自定义过滤器
+        def strftime_filter(value, fmt='%Y-%m-%d'):
+            if isinstance(value, datetime):
+                return value.strftime(fmt)
+            elif isinstance(value, str):
+                try:
+                    dt = pd.to_datetime(value)
+                    if isinstance(dt, pd.Timestamp):
+                        return dt.strftime(fmt)
+                    return dt.strftime(fmt)
+                except:
+                    return str(value)
+            return str(value)
+        
+        self.jinja_env.filters['strftime'] = strftime_filter
     
     def record_daily_state(self, date: str, account, market_prices: Dict[str, float]):
         """
@@ -88,14 +120,19 @@ class BacktestReport:
         """
         logger.info("生成回测报告...")
         
-        # 生成文本报告
-        text_report = self._generate_text_report(account, stock_code, start_date, end_date)
+        # 先生成走势图（需要在 Markdown 中引用）
+        chart_file = self._generate_charts(stock_code, start_date, end_date)
         
-        # 保存文本报告
-        report_file = self.output_dir / f"backtest_report_{stock_code}_{start_date}_{end_date}.txt"
+        # 生成 Markdown 报告（包含图表引用）
+        markdown_report = self._generate_markdown_report(
+            account, stock_code, start_date, end_date, chart_file
+        )
+        
+        # 保存 Markdown 报告
+        report_file = self.output_dir / f"backtest_report_{stock_code}_{start_date}_{end_date}.md"
         with open(report_file, 'w', encoding='utf-8') as f:
-            f.write(text_report)
-        logger.info(f"文本报告已保存: {report_file}")
+            f.write(markdown_report)
+        logger.info(f"Markdown 报告已保存: {report_file}")
         
         # 生成 JSON 报告
         json_report = self._generate_json_report(account, stock_code, start_date, end_date)
@@ -104,154 +141,246 @@ class BacktestReport:
             json.dump(json_report, f, indent=2, ensure_ascii=False, default=str)
         logger.info(f"JSON 报告已保存: {json_file}")
         
-        # 生成走势图
-        self._generate_charts(stock_code, start_date, end_date)
-        
         return report_file
     
-    def _generate_text_report(self, account, stock_code: str, start_date: str, end_date: str) -> str:
-        """生成文本报告"""
-        lines = []
-        lines.append("=" * 80)
-        lines.append("回测报告")
-        lines.append("=" * 80)
-        lines.append(f"股票代码: {stock_code}")
-        lines.append(f"回测期间: {start_date} 至 {end_date}")
-        lines.append(f"交易日数: {len(self.daily_records)}")
-        lines.append("")
+    def _generate_markdown_report(self, account, stock_code: str, start_date: str, end_date: str, chart_file: Optional[Path] = None) -> str:
+        """使用模板生成 Markdown 报告"""
+        # 准备模板数据
+        template_data = {
+            'stock_code': stock_code,
+            'start_date': start_date,
+            'end_date': end_date,
+            'trading_days': len(self.daily_records),
+            'initial_cash': account.initial_cash
+        }
         
-        # 账户摘要
+        # 添加最终状态
         if self.daily_records:
             final_record = self.daily_records[-1]
-            lines.append("账户摘要")
-            lines.append("-" * 80)
-            lines.append(f"初始资金:     {account.initial_cash:,.2f} 元")
-            lines.append(f"最终现金:     {final_record['cash']:,.2f} 元")
-            lines.append(f"最终持仓市值: {final_record['positions_value']:,.2f} 元")
-            lines.append(f"最终总权益:   {final_record['equity']:,.2f} 元")
-            lines.append(f"总盈亏:       {final_record['profit']:+,.2f} 元")
-            lines.append(f"总收益率:     {final_record['return_pct']:+.2f}%")
-            lines.append("")
+            template_data['final_state'] = {
+                'cash': final_record['cash'],
+                'positions_value': final_record['positions_value'],
+                'equity': final_record['equity'],
+                'profit': final_record['profit'],
+                'return_pct': final_record['return_pct'],
+                'positions': final_record['positions']
+            }
+        else:
+            template_data['final_state'] = {
+                'cash': account.cash,
+                'positions_value': 0.0,
+                'equity': account.cash,
+                'profit': 0.0,
+                'return_pct': 0.0,
+                'positions': {}
+            }
         
-        # 交易记录
-        lines.append("交易记录")
-        lines.append("-" * 80)
+        # 添加交易统计
         if account.trades:
-            for i, trade in enumerate(account.trades, 1):
-                date_str = trade['date'].strftime('%Y-%m-%d') if isinstance(trade['date'], datetime) else str(trade['date'])
-                if trade['type'] == 'buy':
-                    lines.append(
-                        f"{i}. [{date_str}] 买入 {trade['stock_code']}: "
-                        f"{trade['shares']} 股 @ {trade['price']:.2f}, "
-                        f"成本 {trade['cost']:,.2f}"
-                    )
-                else:
-                    lines.append(
-                        f"{i}. [{date_str}] 卖出 {trade['stock_code']}: "
-                        f"{trade['shares']} 股 @ {trade['price']:.2f}, "
-                        f"收入 {trade['revenue']:,.2f}, "
-                        f"利润 {trade['profit']:+,.2f}"
-                    )
-        else:
-            lines.append("(无交易记录)")
-        lines.append("")
+            buy_trades = [t for t in account.trades if t['type'] == 'buy']
+            sell_trades = [t for t in account.trades if t['type'] == 'sell']
+            template_data['trade_statistics'] = {
+                'total_trades': len(account.trades),
+                'buy_count': len(buy_trades),
+                'sell_count': len(sell_trades),
+                'total_buy_cost': sum(t['cost'] for t in buy_trades),
+                'total_sell_revenue': sum(t.get('revenue', 0) for t in sell_trades),
+                'realized_profit': sum(t.get('profit', 0) for t in sell_trades)
+            }
         
-        # 最终持仓
-        lines.append("最终持仓")
-        lines.append("-" * 80)
-        if self.daily_records and self.daily_records[-1]['positions']:
-            for stock_code, pos in self.daily_records[-1]['positions'].items():
-                lines.append(
-                    f"{stock_code}: {pos['shares']} 股 @ 成本 {pos['average_price']:.2f}, "
-                    f"现价 {pos['current_price']:.2f}, "
-                    f"市值 {pos['market_value']:,.2f}, "
-                    f"盈亏 {pos['profit']:+,.2f}"
-                )
-        else:
-            lines.append("(无持仓)")
-        lines.append("")
+        # 添加交易记录（按日期排序）
+        sorted_trades = sorted(
+            account.trades,
+            key=lambda t: t['date'] if isinstance(t['date'], datetime) else pd.to_datetime(t['date'])
+        )
+        template_data['trades'] = sorted_trades
         
-        # 统计信息
+        # 添加统计信息
         if len(self.daily_records) > 1:
-            lines.append("统计信息")
-            lines.append("-" * 80)
             equities = [r['equity'] for r in self.daily_records]
             returns = [r['return_pct'] for r in self.daily_records]
-            
-            lines.append(f"最高权益:     {max(equities):,.2f} 元")
-            lines.append(f"最低权益:     {min(equities):,.2f} 元")
-            lines.append(f"最高收益率:   {max(returns):+.2f}%")
-            lines.append(f"最低收益率:   {min(returns):+.2f}%")
-            
-            # 计算最大回撤
             max_drawdown = self._calculate_max_drawdown(equities)
-            lines.append(f"最大回撤:     {max_drawdown:.2f}%")
             
-            # 计算夏普比率并在统计信息中显示
             daily_returns, sharpe_info = self._calculate_daily_returns(risk_free_rate_annual=0.0)
-            if sharpe_info:
-                lines.append(f"年化夏普比率: {sharpe_info['sharpe_annual']:.4f}")
-                lines.append(f"日频夏普比率: {sharpe_info['sharpe_daily']:.4f}")
-            lines.append("")
             
-            # 详细夏普比率计算
+            template_data['statistics'] = {
+                'max_equity': max(equities),
+                'min_equity': min(equities),
+                'max_return_pct': max(returns),
+                'min_return_pct': min(returns),
+                'max_drawdown_pct': max_drawdown
+            }
+            
             if sharpe_info:
-                lines.append("夏普比率计算")
-                lines.append("-" * 80)
-                lines.append("1. 日收益率序列计算:")
-                lines.append(f"   公式: r_t = E_t / E_{{t-1}} - 1")
-                lines.append(f"   其中 E_t 是第 t 天收盘后的账户净值")
-                lines.append(f"   交易日数: {sharpe_info['num_trading_days']} 天")
-                if len(daily_returns) <= 10:
-                    # 如果收益率序列较短，显示所有值
-                    for i, r in enumerate(daily_returns, 1):
-                        lines.append(f"   r_{i} = {r:.6f}")
-                else:
-                    # 只显示前5个和后5个
-                    for i, r in enumerate(daily_returns[:5], 1):
-                        lines.append(f"   r_{i} = {r:.6f}")
-                    lines.append(f"   ... (共 {len(daily_returns)} 个值)")
-                    for i, r in enumerate(daily_returns[-5:], len(daily_returns)-4):
-                        lines.append(f"   r_{i} = {r:.6f}")
-                lines.append("")
-                
-                lines.append("2. 无风险利率:")
-                lines.append(f"   年化无风险利率 R_f(ann) = {sharpe_info['risk_free_rate_annual']:.4f} ({sharpe_info['risk_free_rate_annual']*100:.2f}%)")
-                lines.append(f"   日化无风险利率 r_f = (1 + R_f(ann))^(1/252) - 1")
-                lines.append(f"   r_f = {sharpe_info['risk_free_rate_daily']:.6f} ({sharpe_info['risk_free_rate_daily']*100:.4f}%)")
-                lines.append("")
-                
-                lines.append("3. 超额日收益:")
-                lines.append(f"   公式: x_t = r_t - r_f")
-                excess_returns = sharpe_info['excess_returns']
-                if len(excess_returns) <= 10:
-                    for i, x in enumerate(excess_returns, 1):
-                        lines.append(f"   x_{i} = {x:.6f}")
-                else:
-                    for i, x in enumerate(excess_returns[:5], 1):
-                        lines.append(f"   x_{i} = {x:.6f}")
-                    lines.append(f"   ... (共 {len(excess_returns)} 个值)")
-                    for i, x in enumerate(excess_returns[-5:], len(excess_returns)-4):
-                        lines.append(f"   x_{i} = {x:.6f}")
-                lines.append("")
-                
-                lines.append("4. 均值和标准差:")
-                lines.append(f"   样本均值: x̄ = (1/T) * Σx_t = {sharpe_info['mean_excess_return']:.6f}")
-                lines.append(f"   样本标准差: s = sqrt((1/(T-1)) * Σ(x_t - x̄)^2) = {sharpe_info['std_excess_return']:.6f}")
-                lines.append("")
-                
-                lines.append("5. 夏普比率:")
-                lines.append(f"   日频夏普比率: Sharpe_daily = x̄ / s = {sharpe_info['sharpe_daily']:.6f}")
-                lines.append(f"   年化夏普比率: Sharpe_ann = sqrt(252) * Sharpe_daily = {sharpe_info['sharpe_annual']:.6f}")
-                lines.append("")
-                lines.append(f"最终结果:")
-                lines.append(f"   日频夏普比率: {sharpe_info['sharpe_daily']:.4f}")
-                lines.append(f"   年化夏普比率: {sharpe_info['sharpe_annual']:.4f}")
-                lines.append("")
+                template_data['statistics']['sharpe_annual'] = sharpe_info['sharpe_annual']
+                template_data['statistics']['sharpe_daily'] = sharpe_info['sharpe_daily']
+        else:
+            template_data['statistics'] = {
+                'max_equity': account.initial_cash,
+                'min_equity': account.initial_cash,
+                'max_return_pct': 0.0,
+                'min_return_pct': 0.0,
+                'max_drawdown_pct': 0.0
+            }
         
-        lines.append("=" * 80)
+        # 添加图表文件路径（相对路径，用于 Markdown 中的图片引用）
+        if chart_file and chart_file.exists():
+            # 使用相对于 Markdown 文件的路径
+            chart_relative_path = chart_file.name
+            template_data['chart_file'] = chart_relative_path
+        else:
+            template_data['chart_file'] = None
         
-        return "\n".join(lines)
+        # 渲染模板
+        template = self.jinja_env.get_template('report_template.md.j2')
+        return template.render(**template_data)
+    
+    def _format_header(self, stock_code: str, start_date: str, end_date: str) -> List[str]:
+        """格式化报告头部"""
+        return [
+            MAIN_SEPARATOR,
+            "回测报告".center(REPORT_WIDTH),
+            MAIN_SEPARATOR,
+            "",
+            f"股票代码: {stock_code}",
+            f"回测期间: {start_date} 至 {end_date}",
+            f"交易日数: {len(self.daily_records)}",
+            ""
+        ]
+    
+    def _format_account_summary(self, account) -> List[str]:
+        """格式化账户摘要"""
+        final_record = self.daily_records[-1]
+        lines = [
+            "账户摘要",
+            SECTION_SEPARATOR,
+            f"初始资金:     {account.initial_cash:>15,.2f} 元",
+            f"最终现金:     {final_record['cash']:>15,.2f} 元",
+            f"最终持仓市值: {final_record['positions_value']:>15,.2f} 元",
+            f"最终总权益:   {final_record['equity']:>15,.2f} 元",
+            f"总盈亏:       {final_record['profit']:>15+,.2f} 元",
+            f"总收益率:     {final_record['return_pct']:>15+.2f}%",
+            ""
+        ]
+        return lines
+    
+    def _format_trade_statistics(self, trades: List[Dict]) -> List[str]:
+        """格式化交易统计信息"""
+        buy_trades = [t for t in trades if t['type'] == 'buy']
+        sell_trades = [t for t in trades if t['type'] == 'sell']
+        
+        total_buy_cost = sum(t['cost'] for t in buy_trades)
+        total_sell_revenue = sum(t.get('revenue', 0) for t in sell_trades)
+        total_sell_profit = sum(t.get('profit', 0) for t in sell_trades)
+        
+        avg_buy_price = sum(t['price'] * t['shares'] for t in buy_trades) / sum(t['shares'] for t in buy_trades) if buy_trades else 0
+        avg_sell_price = sum(t['price'] * t['shares'] for t in sell_trades) / sum(t['shares'] for t in sell_trades) if sell_trades else 0
+        
+        lines = [
+            "交易统计",
+            SECTION_SEPARATOR,
+            f"总交易次数:       {len(trades):>10} 次",
+            f"  买入次数:       {len(buy_trades):>10} 次",
+            f"  卖出次数:       {len(sell_trades):>10} 次",
+            "",
+            f"买入总成本:       {total_buy_cost:>15,.2f} 元",
+            f"卖出总收入:       {total_sell_revenue:>15,.2f} 元",
+            f"已实现盈亏:       {total_sell_profit:>15+,.2f} 元",
+            "",
+            f"平均买入价格:     {avg_buy_price:>15,.2f} 元/股" if buy_trades else "",
+            f"平均卖出价格:     {avg_sell_price:>15,.2f} 元/股" if sell_trades else "",
+            ""
+        ]
+        return [line for line in lines if line]  # 移除空行
+    
+    def _format_trades(self, trades: List[Dict]) -> List[str]:
+        """格式化交易记录"""
+        lines = [
+            "交易记录",
+            SECTION_SEPARATOR
+        ]
+        
+        if not trades:
+            lines.append("(无交易记录)")
+            lines.append("")
+            return lines
+        
+        # 按日期排序
+        sorted_trades = sorted(trades, key=lambda t: t['date'] if isinstance(t['date'], datetime) else pd.to_datetime(t['date']))
+        
+        for i, trade in enumerate(sorted_trades, 1):
+            date_str = trade['date'].strftime('%Y-%m-%d') if isinstance(trade['date'], datetime) else str(trade['date'])
+            
+            if trade['type'] == 'buy':
+                lines.append(
+                    f"{i:>4}. [{date_str}] 买入 {trade['stock_code']:>10} | "
+                    f"{trade['shares']:>6} 股 @ {trade['price']:>8.2f} | "
+                    f"成本: {trade['cost']:>10,.2f} 元"
+                )
+            else:
+                lines.append(
+                    f"{i:>4}. [{date_str}] 卖出 {trade['stock_code']:>10} | "
+                    f"{trade['shares']:>6} 股 @ {trade['price']:>8.2f} | "
+                    f"收入: {trade['revenue']:>10,.2f} 元 | "
+                    f"利润: {trade['profit']:>10+,.2f} 元"
+                )
+        
+        lines.append("")
+        return lines
+    
+    def _format_final_positions(self) -> List[str]:
+        """格式化最终持仓"""
+        lines = [
+            "最终持仓",
+            SECTION_SEPARATOR
+        ]
+        
+        if not self.daily_records or not self.daily_records[-1]['positions']:
+            lines.append("(无持仓)")
+            lines.append("")
+            return lines
+        
+        positions = self.daily_records[-1]['positions']
+        for stock_code, pos in positions.items():
+            profit_pct = (pos['profit'] / (pos['shares'] * pos['average_price'])) * 100 if pos['shares'] * pos['average_price'] > 0 else 0
+            lines.append(
+                f"{stock_code:>10} | "
+                f"{pos['shares']:>6} 股 | "
+                f"成本: {pos['average_price']:>8.2f} | "
+                f"现价: {pos['current_price']:>8.2f} | "
+                f"市值: {pos['market_value']:>12,.2f} 元 | "
+                f"盈亏: {pos['profit']:>10+,.2f} 元 ({profit_pct:+.2f}%)"
+            )
+        
+        lines.append("")
+        return lines
+    
+    def _format_statistics(self) -> List[str]:
+        """格式化统计信息"""
+        equities = [r['equity'] for r in self.daily_records]
+        returns = [r['return_pct'] for r in self.daily_records]
+        
+        max_drawdown = self._calculate_max_drawdown(equities)
+        daily_returns, sharpe_info = self._calculate_daily_returns(risk_free_rate_annual=0.0)
+        
+        lines = [
+            "统计信息",
+            SECTION_SEPARATOR,
+            f"最高权益:       {max(equities):>15,.2f} 元",
+            f"最低权益:       {min(equities):>15,.2f} 元",
+            f"最高收益率:     {max(returns):>15+.2f}%",
+            f"最低收益率:     {min(returns):>15+.2f}%",
+            f"最大回撤:       {max_drawdown:>15.2f}%"
+        ]
+        
+        if sharpe_info:
+            lines.extend([
+                f"年化夏普比率:   {sharpe_info['sharpe_annual']:>15.4f}",
+                f"日频夏普比率:   {sharpe_info['sharpe_daily']:>15.4f}"
+            ])
+        
+        lines.append("")
+        return lines
     
     def _generate_json_report(self, account, stock_code: str, start_date: str, end_date: str) -> Dict:
         """生成 JSON 报告"""
@@ -260,9 +389,7 @@ class BacktestReport:
             "start_date": start_date,
             "end_date": end_date,
             "trading_days": len(self.daily_records),
-            "initial_cash": account.initial_cash,
-            "trades": account.trades,
-            "daily_records": self.daily_records
+            "initial_cash": account.initial_cash
         }
         
         if self.daily_records:
@@ -274,6 +401,19 @@ class BacktestReport:
                 "profit": final_record['profit'],
                 "return_pct": final_record['return_pct'],
                 "positions": final_record['positions']
+            }
+            
+            # 交易统计
+            buy_trades = [t for t in account.trades if t['type'] == 'buy']
+            sell_trades = [t for t in account.trades if t['type'] == 'sell']
+            
+            report["trade_statistics"] = {
+                "total_trades": len(account.trades),
+                "buy_count": len(buy_trades),
+                "sell_count": len(sell_trades),
+                "total_buy_cost": sum(t['cost'] for t in buy_trades),
+                "total_sell_revenue": sum(t.get('revenue', 0) for t in sell_trades),
+                "realized_profit": sum(t.get('profit', 0) for t in sell_trades)
             }
             
             # 添加统计信息
@@ -292,24 +432,27 @@ class BacktestReport:
                 "max_drawdown_pct": max_drawdown
             }
             
-            # 在统计信息中添加夏普比率
+            # 添加风险指标
             if sharpe_info:
-                report["statistics"]["sharpe_annual"] = sharpe_info['sharpe_annual']
-                report["statistics"]["sharpe_daily"] = sharpe_info['sharpe_daily']
-            
-            # 添加详细的夏普比率信息
-            if sharpe_info:
-                report["sharpe_ratio"] = {
+                report["statistics"].update({
+                    "sharpe_annual": sharpe_info['sharpe_annual'],
+                    "sharpe_daily": sharpe_info['sharpe_daily'],
+                    "mean_daily_return": sharpe_info['mean_excess_return'],
+                    "std_daily_return": sharpe_info['std_excess_return']
+                })
+                
+                # 详细的夏普比率信息（可选，用于深度分析）
+                report["sharpe_ratio_details"] = {
                     "risk_free_rate_annual": sharpe_info['risk_free_rate_annual'],
                     "risk_free_rate_daily": sharpe_info['risk_free_rate_daily'],
-                    "mean_excess_return": sharpe_info['mean_excess_return'],
-                    "std_excess_return": sharpe_info['std_excess_return'],
-                    "sharpe_daily": sharpe_info['sharpe_daily'],
-                    "sharpe_annual": sharpe_info['sharpe_annual'],
                     "num_trading_days": sharpe_info['num_trading_days'],
                     "daily_returns": daily_returns,
                     "excess_returns": sharpe_info['excess_returns']
                 }
+        
+        # 交易记录和每日记录（放在最后，因为可能很大）
+        report["trades"] = account.trades
+        report["daily_records"] = self.daily_records
         
         return report
     
@@ -403,11 +546,11 @@ class BacktestReport:
         
         return daily_returns, sharpe_info
     
-    def _generate_charts(self, stock_code: str, start_date: str, end_date: str):
+    def _generate_charts(self, stock_code: str, start_date: str, end_date: str) -> Optional[Path]:
         """生成走势图"""
         if not self.daily_records:
             logger.warning("没有每日记录，无法生成走势图")
-            return
+            return None
         
         logger.info("生成走势图...")
         
@@ -563,4 +706,5 @@ class BacktestReport:
         plt.close()
         
         logger.info(f"走势图已保存: {chart_file}")
+        return chart_file
 
