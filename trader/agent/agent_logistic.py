@@ -21,7 +21,7 @@ except ImportError:
     # 如果 tqdm 未安装，使用一个简单的替代实现
     def tqdm(iterable, desc=None, total=None, **kwargs):
         if desc:
-            print(f"{desc}...")
+            print(f"{desc}...", file=sys.stderr)
         return iterable
 
 try:
@@ -280,7 +280,10 @@ class LogisticAgent(TradingAgent):
             range(train_samples),
             desc=f"准备训练数据 ({stock_code}, 前70%)",
             total=train_samples,
-            leave=False
+            leave=False,  # 完成后清除，不占用位置
+            file=sys.stderr,  # 明确输出到 stderr
+            position=2,  # 嵌套进度条，使用 position=2（在回测进度条和特征进度条上方）
+            ncols=100  # 限制宽度，避免太宽
         ):
             date_str = price_data.iloc[i]['datetime'].strftime('%Y-%m-%d')
             
@@ -500,6 +503,48 @@ class LogisticAgent(TradingAgent):
         except Exception as e:
             logger.error(f"预测时出错: {e}", exc_info=True)
             return 0.0
+    
+    def weight(self, stock_code: str, score: float, engine: BacktestEngine) -> float:
+        """
+        计算实际资金配置比例（重写基类方法，使用更激进的映射以增加仓位）
+        
+        使用平方映射：weight = score^2 * max_position_weight * multiplier
+        这样可以：
+        1. 低 score 的股票仓位更小（风险控制）
+        2. 高 score 的股票仓位更大（收益放大）
+        3. 通过 multiplier 调整整体仓位水平，使其更接近 Turtle 策略
+        
+        Args:
+            stock_code: 股票代码
+            score: 该股票的 score 值（范围 [-1, 1]）
+            engine: 回测引擎
+            
+        Returns:
+            float: 资金配置比例，范围 [0, max_position_weight]
+        """
+        # 如果 score 低于阈值，不配置
+        if score < self.min_score_threshold:
+            return 0.0
+        
+        # 只考虑正分
+        normalized_score = max(0.0, score)
+        
+        # 使用平方映射 + 系数调整，使仓位更接近 Turtle 策略
+        # 示例（max_position_weight=0.4, multiplier=3.0）：
+        # score = 0.05 -> weight = 0.05^2 * 0.4 * 3.0 = 0.003（约0.3%）
+        # score = 0.15 -> weight = 0.15^2 * 0.4 * 3.0 = 0.027（约3%）
+        # score = 0.3  -> weight = 0.3^2 * 0.4 * 3.0 = 0.108（约11%）
+        # score = 0.5  -> weight = 0.5^2 * 0.4 * 3.0 = 0.3（30%）
+        # score = 0.7  -> weight = 0.7^2 * 0.4 * 3.0 = 0.588 -> 0.4（限制在max_position_weight）
+        multiplier = 3.0  # 仓位放大系数，用于增加整体仓位水平
+        
+        # 平方映射：score 越高，仓位增长越快
+        weight = (normalized_score ** 2) * self.max_position_weight * multiplier
+        
+        # 限制在 [0, max_position_weight] 范围内
+        weight = min(weight, self.max_position_weight)
+        
+        return max(0.0, weight)
     
     def on_date(self, engine: BacktestEngine, date: str):
         """

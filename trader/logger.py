@@ -2,12 +2,20 @@
 专业的日志系统配置模块
 提供统一的日志接口，支持文件和控制台输出
 支持彩色日志输出
+支持与 tqdm 进度条共存（日志输出不干扰进度条）
 """
 import logging
 import os
 import sys
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
+
+# 尝试导入 tqdm，如果存在则使用 tqdm.write() 输出日志
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
 
 # ANSI 颜色代码
 class Colors:
@@ -134,8 +142,23 @@ def setup_logger(name: str = 'trader', level: str = 'INFO') -> logging.Logger:
     log_level = getattr(logging, level.upper(), logging.INFO)
     logger.setLevel(log_level)
     
-    # 控制台 handler（带颜色）
-    console_handler = logging.StreamHandler(sys.stdout)
+    # 控制台 handler（带颜色，支持与 tqdm 共存）
+    if HAS_TQDM:
+        # 使用 TqdmHandler 来避免干扰 tqdm 进度条
+        class TqdmHandler(logging.StreamHandler):
+            """使用 tqdm.write() 输出日志，避免干扰进度条"""
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    tqdm.write(msg, file=sys.stderr)
+                    self.flush()
+                except Exception:
+                    self.handleError(record)
+        
+        console_handler = TqdmHandler(sys.stderr)
+    else:
+        console_handler = logging.StreamHandler(sys.stdout)
+    
     console_handler.setLevel(log_level)
     console_formatter = ColoredFormatter(
         use_color=True,

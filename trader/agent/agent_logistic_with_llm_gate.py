@@ -287,12 +287,17 @@ class LogisticAgentWithLLMGate(LogisticAgent):
             }
         
         # 调用 LLM
-        logger.debug(f"[{self.name}] 调用 LLM Gate 评估: {stock_code} on {date}, score={score:.4f}, weight={target_weight:.2%}")
+        logger.info(f"[{self.name}] 调用 LLM Gate 评估: {stock_code} on {date}, score={score:.4f}, weight={target_weight:.2%}")
         
         if self.test_mode:
             logger.info(f"[{self.name}] 测试模式：显示完整 prompt（前500字符）: {prompt[:500]}...")
         
         response = self._call_llm(prompt)
+        
+        if response:
+            logger.info(f"[{self.name}] LLM API 调用成功: {stock_code} on {date}")
+        else:
+            logger.warning(f"[{self.name}] LLM API 调用失败: {stock_code} on {date}")
         
         if not response:
             logger.warning(f"[{self.name}] LLM 调用失败，默认执行交易")

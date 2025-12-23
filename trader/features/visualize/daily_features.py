@@ -11,13 +11,15 @@ import sys
 from typing import List, Optional, Dict
 from datetime import datetime
 
+import sys
+
 try:
     from tqdm import tqdm
 except ImportError:
     # 如果 tqdm 未安装，使用一个简单的替代实现
     def tqdm(iterable, desc=None, total=None, **kwargs):
         if desc:
-            print(f"{desc}...")
+            print(f"{desc}...", file=sys.stderr)
         return iterable
 
 # 添加项目根目录到 Python 路径
@@ -188,7 +190,7 @@ def compute_features_for_all_symbols(df: pd.DataFrame, force: bool = False) -> D
     logger.info(f"日期范围: {min_date.date()} 到 {max_date.date()}, 共 {len(full_date_range)} 天")
     
     # 按 symbol 分组处理
-    for symbol in tqdm(symbols, desc="处理股票", unit="股票"):
+    for symbol in tqdm(symbols, desc="处理股票", unit="股票", file=sys.stderr, position=0, leave=True):
         logger.debug(f"处理股票: {symbol}")
         symbol_df = df[df['stock_code'] == symbol].copy()
         
@@ -214,7 +216,15 @@ def compute_features_for_all_symbols(df: pd.DataFrame, force: bool = False) -> D
         features_to_cache = []
         
         # 为每个特征计算值
-        for feature_name in tqdm(feature_names, desc=f"计算 {symbol} 的特征", leave=False, unit="特征"):
+        for feature_name in tqdm(
+            feature_names, 
+            desc=f"计算 {symbol} 的特征", 
+            leave=False,  # 完成后清除，不占用位置
+            unit="特征", 
+            file=sys.stderr, 
+            position=1,  # 嵌套进度条，使用 position=1（在处理股票进度条上方）
+            ncols=100  # 限制宽度，避免太宽
+        ):
             feature_spec = get_feature(feature_name)
             if feature_spec is None:
                 logger.debug(f"跳过未找到的特征: {feature_name}")

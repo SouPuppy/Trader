@@ -1,7 +1,7 @@
 """
-多资产交易策略示例（使用 LogisticAgent）
-使用 MultiAssetLogisticAgent 对指定股票池中的股票分别使用独立的 LogisticAgent 获取信号
-然后使用 multiagent_weight_normalized 进行权重归一化
+多资产交易策略示例（使用 LogisticAgent with LLM Uncertainty Gate）
+使用 MultiAssetLogisticAgentWithLLMGate 对指定股票池中的股票分别使用独立的 LogisticAgentWithLLMGate 获取信号
+然后使用 LLM uncertainty gate 进行风险控制，最后进行权重归一化
 """
 import sys
 from pathlib import Path
@@ -12,7 +12,7 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from trader.agent.MultiAssetTradingAgent import MultiAssetLogisticAgent
+from trader.agent.multiasset_logistic_with_llm_gate import MultiAssetLogisticAgentWithLLMGate
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
@@ -37,9 +37,15 @@ def multi_asset_strategy(
     # 新增：交易频率控制参数
     min_trade_amount: float = 5000.0,  # 最小交易金额阈值（从100元提高到5000元）
     min_weight_change: float = 0.05,  # 最小权重变化阈值（5%），避免微小调整
+    # LLM Gate 参数
+    apply_llm_gate: bool = True,  # 是否应用 LLM uncertainty gate 风险控制
+    llm_model: str = "deepseek-chat",  # LLM 模型名称
+    llm_temperature: float = 0.3,  # LLM 温度参数（控制随机性）
+    test_mode: bool = False,  # 测试模式，如果为 True，会打印更详细的调试信息
+    test_force_reject: bool = False,  # 测试模式下的强制拒绝
 ):
     """
-    多资产交易策略回测
+    多资产交易策略回测（带 LLM Uncertainty Gate 风险控制）
     
     Args:
         stock_codes: 股票代码列表，如果为 None 则使用默认股票池
@@ -54,8 +60,15 @@ def multi_asset_strategy(
         train_test_split_ratio: LogisticAgent 训练/测试分割比例
         start_date: 开始日期
         end_date: 结束日期
+        min_trade_amount: 最小交易金额阈值
+        min_weight_change: 最小权重变化阈值
+        apply_llm_gate: 是否应用 LLM uncertainty gate 风险控制
+        llm_model: LLM 模型名称
+        llm_temperature: LLM 温度参数
+        test_mode: 测试模式
+        test_force_reject: 测试模式下的强制拒绝
     """
-    for line in log_section("多资产交易策略回测（Logistic）"):
+    for line in log_section("多资产交易策略回测（Logistic with LLM Uncertainty Gate）"):
         logger.info(line)
     
     # 初始化市场、账户和回测引擎
@@ -87,21 +100,33 @@ def multi_asset_strategy(
     logger.info(f"最小交易金额: {min_trade_amount:,.0f} 元")
     logger.info(f"最小权重变化阈值: {min_weight_change*100:.0f}%")
     
+    # LLM Gate 参数
+    if apply_llm_gate:
+        logger.info(f"LLM Uncertainty Gate: 启用")
+        logger.info(f"  - LLM 模型: {llm_model}")
+        logger.info(f"  - LLM 温度: {llm_temperature:.2f}")
+        logger.info(f"  - 测试模式: {test_mode}")
+    else:
+        logger.info(f"LLM Uncertainty Gate: 禁用")
+    
     # 生成报告标题
     report_title = (
-        f"MultiAsset_Logistic_Strategy_"
+        f"MultiAsset_Logistic_LLMGate_Strategy_"
         f"{len(valid_stock_codes)}stocks_maxPos{max_position_weight*100:.0f}"
     )
+    if apply_llm_gate:
+        report_title += f"_llm{llm_model}_temp{llm_temperature:.0f}"
+    
     engine = BacktestEngine(
         account, market,
         report_title=report_title,
         train_test_split_ratio=train_test_split_ratio
     )
     
-    # 创建多资产交易代理（使用 LogisticAgent，启用并行计算）
-    agent = MultiAssetLogisticAgent(
+    # 创建多资产交易代理（使用 LogisticAgentWithLLMGate）
+    agent = MultiAssetLogisticAgentWithLLMGate(
         stock_codes=valid_stock_codes,
-        name="MultiAsset_Logistic",
+        name="MultiAsset_Logistic_LLMGate",
         max_position_weight=max_position_weight,
         min_score_threshold=min_score_threshold,
         max_total_weight=max_total_weight,
@@ -110,8 +135,12 @@ def multi_asset_strategy(
         ret_threshold=ret_threshold,
         retrain_frequency=retrain_frequency,
         train_test_split_ratio=train_test_split_ratio,
-        use_parallel=False,  # 禁用并行计算（并行反而变慢，见下方说明）
-        max_workers=None  # 自动设置线程数（股票数量或 CPU 核心数，取较小值）
+        llm_model=llm_model,
+        llm_temperature=llm_temperature,
+        test_mode=test_mode,
+        test_force_reject=test_force_reject,
+        use_parallel=False,  # 禁用并行计算
+        max_workers=None
     )
     
     # 记录上一日的权重，用于计算权重变化
@@ -133,8 +162,11 @@ def multi_asset_strategy(
         # 更新 agent 状态
         agent.on_date(eng, date)
         
-        # 获取所有股票的归一化权重
-        weights = agent.get_all_weights(eng)
+        # 获取所有股票的归一化权重（应用 LLM uncertainty gate）
+        weights = agent.get_all_weights(
+            eng,
+            apply_llm_gate=apply_llm_gate
+        )
         
         # 获取账户权益
         account_equity = account.equity(market_prices)
@@ -221,10 +253,37 @@ def multi_asset_strategy(
             # 输出详细账户摘要
             logger.info("")
             logger.info(account.summary(final_prices))
+            
+            # 输出 LLM Gate 统计信息
+            if apply_llm_gate:
+                logger.info("")
+                for line in log_section("LLM Gate 统计信息"):
+                    logger.info(line)
+                gate_stats = agent.get_gate_stats()
+                total_passed = 0
+                total_skipped = 0
+                for stock_code, stats in gate_stats.items():
+                    passed = stats.get("gate_passed_count", 0)
+                    skipped = stats.get("gate_skipped_count", 0)
+                    total = stats.get("total_evaluations", 0)
+                    total_passed += passed
+                    total_skipped += skipped
+                    if total > 0:
+                        logger.info(
+                            f"{stock_code}: 通过={passed}, 拒绝={skipped}, "
+                            f"总计={total}, 拒绝率={skipped/total*100:.1f}%"
+                        )
+                total_evaluations = total_passed + total_skipped
+                if total_evaluations > 0:
+                    logger.info(
+                        f"总计: 通过={total_passed}, 拒绝={total_skipped}, "
+                        f"总计={total_evaluations}, 拒绝率={total_skipped/total_evaluations*100:.1f}%"
+                    )
+                logger.info(log_separator())
 
 
 if __name__ == "__main__":
-    # 执行多资产交易策略（优化版）
+    # 执行多资产交易策略（带 LLM Uncertainty Gate 风险控制）
     # 默认使用指定的5支股票：AAPL.O, AMZN.O, ASML.O, META.O, MRNA.O
     multi_asset_strategy(
         stock_codes=["AAPL.O", "AMZN.O", "ASML.O", "META.O", "MRNA.O"],
@@ -240,7 +299,13 @@ if __name__ == "__main__":
         start_date=None,
         end_date=None,
         # 优化参数：减少频繁交易
-        min_trade_amount=5000.0,  # 最小交易金额5000元（从100元大幅提高）
+        min_trade_amount=5000.0,  # 最小交易金额5000元
         min_weight_change=0.05,  # 权重变化至少5%才交易（避免微小调整）
+        # LLM Gate 参数
+        apply_llm_gate=True,  # 启用 LLM uncertainty gate 风险控制
+        llm_model="deepseek-chat",  # LLM 模型名称
+        llm_temperature=0.3,  # LLM 温度参数（控制随机性）
+        test_mode=False,  # 测试模式
+        test_force_reject=False,  # 测试模式下的强制拒绝
     )
 

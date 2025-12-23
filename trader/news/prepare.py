@@ -14,13 +14,15 @@ from typing import Dict, Optional
 from html import unescape
 from html.parser import HTMLParser
 
+import sys
+
 try:
     from tqdm import tqdm
 except ImportError:
     # 如果 tqdm 未安装，使用一个简单的替代实现
     def tqdm(iterable, desc=None, total=None, **kwargs):
         if desc:
-            print(f"{desc}...")
+            print(f"{desc}...", file=sys.stderr)
         return iterable
 
 # 添加项目根目录到 Python 路径
@@ -420,7 +422,7 @@ def process_unanalyzed_news(limit: int = 1) -> Dict[str, int]:
         skipped = 0
         
         # 使用 tqdm 显示处理进度
-        for row in tqdm(rows, desc="处理新闻", total=len(rows), unit="条"):
+        for row in tqdm(rows, desc="处理新闻", total=len(rows), unit="条", file=sys.stderr, position=0, leave=True):
             raw_data_id = row['id']
             stock_code = row['stock_code']
             news_raw = row['news']

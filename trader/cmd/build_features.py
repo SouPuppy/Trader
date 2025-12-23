@@ -8,13 +8,15 @@ from pathlib import Path
 import sys
 import pandas as pd
 
+import sys
+
 try:
     from tqdm import tqdm
 except ImportError:
     # 如果 tqdm 未安装，使用一个简单的替代实现
     def tqdm(iterable, desc=None, total=None, **kwargs):
         if desc:
-            print(f"{desc}...")
+            print(f"{desc}...", file=sys.stderr)
         return iterable
 
 # 添加项目根目录到 Python 路径
@@ -212,7 +214,7 @@ def compute_all_features(date: str, symbol: str, force: bool = False) -> Dict[st
     feature_names = get_feature_names()
     logger.info(f"开始计算所有特征: {symbol} on {date}, 共 {len(feature_names)} 个特征, force={force}")
     result = {}
-    for feature_name in tqdm(feature_names, desc=f"计算特征 ({symbol})", unit="特征"):
+    for feature_name in tqdm(feature_names, desc=f"计算特征 ({symbol})", unit="特征", file=sys.stderr, position=0, leave=True):
         result[feature_name] = compute_feature(feature_name, date, symbol, force=force)
     logger.info(f"特征计算完成: {symbol} on {date}, 共 {len(result)} 个特征")
     return result

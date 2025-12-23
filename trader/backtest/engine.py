@@ -2,6 +2,7 @@
 回测引擎：提供行为队列和市场日期循环机制
 所有数据访问必须通过engine，带有日期保护
 """
+import sys
 from datetime import datetime
 from typing import List, Dict, Optional, Callable
 from collections import deque
@@ -275,13 +276,17 @@ class BacktestEngine:
             logger.info(f"测试期范围: {test_start_date} 至 {test_end_date}, 共 {len(test_period_dates)} 个交易日")
         
         # 按日期循环（遍历所有日期，但根据 only_test_period 决定是否执行交易）
-        # 使用 tqdm 显示进度条
+        # 使用 tqdm 显示进度条（固定在底部，不干扰日志）
         date_iterator = tqdm(
             enumerate(dates_to_iterate),
             total=len(dates_to_iterate),
             desc="回测进度",
             unit="日",
-            disable=not HAS_TQDM
+            disable=not HAS_TQDM,
+            file=sys.stderr,  # 明确输出到 stderr
+            position=0,  # 主进度条固定在底部（position=0）
+            leave=True,  # 完成后保留进度条
+            ncols=100  # 限制宽度，避免太宽
         )
         for self.date_index, date in date_iterator:
             self.current_date = date
@@ -661,7 +666,15 @@ class BacktestEngine:
                     logger.debug(f"{desc}...")
                 return iterable
         
-        for feature_name in tqdm(feature_names, desc=f"获取特征 ({stock_code})", leave=False, unit="特征"):
+        for feature_name in tqdm(
+            feature_names, 
+            desc=f"获取特征 ({stock_code})", 
+            leave=False,  # 完成后清除，不占用位置
+            unit="特征",
+            file=sys.stderr,  # 明确输出到 stderr
+            position=1,  # 嵌套进度条，使用 position=1（在主进度条上方）
+            ncols=100  # 限制宽度，避免太宽
+        ):
             result[feature_name] = self.get_feature(feature_name, stock_code, date, force=force)
         
         logger.debug(f"特征获取完成: {stock_code} on {access_date}, 共 {len(result)} 个特征")
