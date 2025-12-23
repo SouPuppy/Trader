@@ -11,6 +11,13 @@ from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.report import BacktestReport
 from trader.features.registry import get_feature, get_feature_names
+from trader.features.cache import (
+    get_cached_feature, 
+    cache_feature, 
+    ensure_features_table,
+    get_cached_all_features,
+    get_cached_features_batch
+)
 from trader.logger import get_logger
 
 logger = get_logger(__name__)
@@ -360,7 +367,7 @@ class BacktestEngine:
         return float(day_data.iloc[0]['volume'])
     
     def get_feature(self, feature_name: str, stock_code: str, 
-                   date: Optional[str] = None) -> Optional[float]:
+                   date: Optional[str] = None, force: bool = False) -> Optional[float]:
         """
         获取特征值（带日期保护）
         
@@ -368,6 +375,7 @@ class BacktestEngine:
             feature_name: 特征名称
             stock_code: 股票代码
             date: 日期（格式: YYYY-MM-DD），如果为 None 则使用当前日期
+            force: 是否强制重新计算，忽略缓存
             
         Returns:
             Optional[float]: 特征值
@@ -376,6 +384,13 @@ class BacktestEngine:
             ValueError: 如果尝试访问未来数据或特征不存在
         """
         access_date = self._check_date_access(date)
+        
+        # 检查缓存（如果 force=False）
+        if not force:
+            cached_value = get_cached_feature(stock_code, access_date, feature_name)
+            if cached_value is not None:
+                logger.debug(f"从缓存获取特征: {feature_name} for {stock_code} on {access_date} = {cached_value}")
+                return cached_value
         
         # 获取特征规范
         feature_spec = get_feature(feature_name)
@@ -404,12 +419,16 @@ class BacktestEngine:
         
         # 如果数据不足，返回None
         if len(df) < feature_spec.lookback + 1:
+            logger.debug(f"数据不足: {stock_code} on {access_date}, feature={feature_name}, "
+                        f"需要 {feature_spec.lookback + 1} 行, 实际 {len(df)} 行")
             return None
         
         # 计算特征
         try:
+            logger.debug(f"计算特征: {feature_name} for {stock_code} on {access_date}")
             result_series = feature_spec.compute(df)
             if result_series.empty:
+                logger.debug(f"特征计算结果为空: {feature_name} for {stock_code} on {access_date}")
                 return None
             
             # 返回指定日期的值
@@ -419,46 +438,108 @@ class BacktestEngine:
                 # 如果没有精确匹配，返回最新值（不超过访问日期）
                 available_values = result_series[result_series.index <= access_date_dt]
                 if available_values.empty:
+                    logger.debug(f"没有可用的特征值: {feature_name} for {stock_code} on {access_date}")
                     return None
                 value = available_values.iloc[-1]
             
-            return float(value) if pd.notna(value) else None
+            result = float(value) if pd.notna(value) else None
+            logger.debug(f"特征计算结果: {feature_name} for {stock_code} on {access_date} = {result}")
+            
+            # 存储到缓存
+            cache_feature(stock_code, access_date, feature_name, result)
+            
+            return result
         except Exception as e:
             logger.error(f"计算特征 {feature_name} 时出错: {e}", exc_info=True)
             return None
     
     def get_features(self, feature_names: List[str], stock_code: str,
-                    date: Optional[str] = None) -> Dict[str, Optional[float]]:
+                    date: Optional[str] = None, force: bool = False) -> Dict[str, Optional[float]]:
         """
         批量获取多个特征值（带日期保护）
+        使用 wide format 缓存，一次查询获取多个特征
         
         Args:
             feature_names: 特征名称列表
             stock_code: 股票代码
             date: 日期（格式: YYYY-MM-DD），如果为 None 则使用当前日期
+            force: 是否强制重新计算，忽略缓存
             
         Returns:
             Dict[str, Optional[float]]: {feature_name: value} 特征值字典
         """
+        access_date = self._check_date_access(date)
+        
+        # 确保 features 表存在
+        ensure_features_table()
+        
+        logger.debug(f"批量获取特征: {stock_code} on {access_date}, 共 {len(feature_names)} 个特征, force={force}")
+        
+        # 检查缓存（如果 force=False）
         result = {}
-        for feature_name in feature_names:
-            result[feature_name] = self.get_feature(feature_name, stock_code, date)
+        if not force:
+            cached_data = get_cached_features_batch(stock_code, [access_date], feature_names)
+            if access_date in cached_data:
+                cached_features = cached_data[access_date]
+                # 检查是否有缺失的特征
+                missing_features = set(feature_names) - set(cached_features.keys())
+                if not missing_features:
+                    logger.debug(f"从缓存批量获取特征: {stock_code} on {access_date}, 共 {len(cached_features)} 个特征")
+                    return cached_features
+                else:
+                    # 部分特征在缓存中，部分需要计算
+                    result.update(cached_features)
+                    feature_names = list(missing_features)
+        
+        # 计算缺失的特征
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            def tqdm(iterable, desc=None, total=None, **kwargs):
+                if desc:
+                    logger.debug(f"{desc}...")
+                return iterable
+        
+        for feature_name in tqdm(feature_names, desc=f"获取特征 ({stock_code})", leave=False, unit="特征"):
+            result[feature_name] = self.get_feature(feature_name, stock_code, date, force=force)
+        
+        logger.debug(f"特征获取完成: {stock_code} on {access_date}, 共 {len(result)} 个特征")
         return result
     
     def get_all_features(self, stock_code: str, 
-                        date: Optional[str] = None) -> Dict[str, Optional[float]]:
+                        date: Optional[str] = None, force: bool = False) -> Dict[str, Optional[float]]:
         """
         获取所有特征值（带日期保护）
+        使用 wide format 缓存，一次查询获取所有特征
         
         Args:
             stock_code: 股票代码
             date: 日期（格式: YYYY-MM-DD），如果为 None 则使用当前日期
+            force: 是否强制重新计算，忽略缓存
             
         Returns:
             Dict[str, Optional[float]]: {feature_name: value} 所有特征值字典
         """
+        access_date = self._check_date_access(date)
+        
+        # 检查缓存（如果 force=False）
+        if not force:
+            cached_features = get_cached_all_features(stock_code, access_date)
+            if cached_features:
+                # 检查是否有缺失的特征
+                feature_names = get_feature_names()
+                missing_features = set(feature_names) - set(cached_features.keys())
+                if not missing_features:
+                    logger.debug(f"从缓存获取所有特征: {stock_code} on {access_date}, 共 {len(cached_features)} 个特征")
+                    return cached_features
+        
+        # 如果缓存不完整或 force=True，计算所有特征
         feature_names = get_feature_names()
-        return self.get_features(feature_names, stock_code, date)
+        result = {}
+        for feature_name in feature_names:
+            result[feature_name] = self.get_feature(feature_name, stock_code, date, force=force)
+        
+        return result
     
     def get_historical_data(self, stock_code: str, start_date: Optional[str] = None,
                            end_date: Optional[str] = None) -> pd.DataFrame:

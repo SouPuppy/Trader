@@ -114,7 +114,21 @@ def init_database():
             conn.commit()
             logger.info("analyzed 字段数据迁移完成")
     
-    # 注意：publish_date 字段已从 raw_data 表移除，现在只在 news_data 表中
+    # 添加单条新闻分析结果字段（每条 raw_data 记录对应一条新闻）
+    news_fields = [
+        ('news_sentiment', 'INTEGER'),  # 单条新闻的情绪 [-10, 10]
+        ('news_impact', 'INTEGER'),     # 单条新闻的影响强度 [0, 10]
+    ]
+    
+    for field_name, field_type in news_fields:
+        if field_name not in columns:
+            logger.info(f"添加 {field_name} 字段到 raw_data 表...")
+            cursor.execute(f"ALTER TABLE raw_data ADD COLUMN {field_name} {field_type}")
+            conn.commit()
+            logger.info(f"{field_name} 字段添加成功")
+    
+    # 注意：每条 raw_data 记录对应一条新闻，分析结果存储在 news_sentiment 和 news_impact 字段中
+    # 计算特征时，通过 SQL 聚合这些字段来计算 mean/sum/count 等特征
     
     # 读取 CSV 文件并插入数据
     # 增加 CSV 字段大小限制以处理长文本（新闻列可能很长）

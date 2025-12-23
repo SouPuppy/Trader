@@ -11,6 +11,15 @@ import sys
 from typing import List, Optional, Dict
 from datetime import datetime
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    # 如果 tqdm 未安装，使用一个简单的替代实现
+    def tqdm(iterable, desc=None, total=None, **kwargs):
+        if desc:
+            print(f"{desc}...")
+        return iterable
+
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
@@ -20,6 +29,11 @@ from trader.config import DB_PATH
 from trader.logger import get_logger
 from trader.features import get_feature_names, get_feature
 from trader.features import features  # 导入特征定义以触发注册
+from trader.features.cache import (
+    get_cached_features_batch, 
+    cache_features_batch, 
+    ensure_features_table
+)
 
 logger = get_logger(__name__)
 
@@ -132,22 +146,50 @@ def load_all_stock_data(symbols: Optional[List[str]] = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def compute_features_for_all_symbols(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+def compute_features_for_all_symbols(df: pd.DataFrame, force: bool = False) -> Dict[str, pd.DataFrame]:
     """
     为所有 symbols 计算所有特征
     
     Args:
         df: 包含所有股票数据的 DataFrame
+        force: 是否强制重新计算，忽略缓存
         
     Returns:
         字典，key 为特征名称，value 为包含所有 symbols 该特征值的 DataFrame
         DataFrame 的列为 symbols，行为日期
     """
+    # 确保 features 表存在
+    ensure_features_table()
+    
     feature_names = get_feature_names()
     results = {}
     
+    symbols = df['stock_code'].unique()
+    logger.info(f"开始计算特征: {len(symbols)} 个股票, {len(feature_names)} 个特征, force={force}")
+    
+    # 首先确定所有股票的日期范围（从最早到最晚）
+    all_dates_set = set()
+    for symbol in symbols:
+        symbol_df = df[df['stock_code'] == symbol].copy()
+        if 'datetime' in symbol_df.columns:
+            symbol_df['datetime'] = pd.to_datetime(symbol_df['datetime'])
+            all_dates_set.update(symbol_df['datetime'].unique())
+        elif isinstance(symbol_df.index, pd.DatetimeIndex):
+            all_dates_set.update(symbol_df.index.unique())
+    
+    if not all_dates_set:
+        logger.warning("没有找到任何日期数据")
+        return {}
+    
+    # 创建完整的日期索引（从最早到最晚，包含所有日期）
+    min_date = min(all_dates_set)
+    max_date = max(all_dates_set)
+    full_date_range = pd.date_range(start=min_date, end=max_date, freq='D')
+    logger.info(f"日期范围: {min_date.date()} 到 {max_date.date()}, 共 {len(full_date_range)} 天")
+    
     # 按 symbol 分组处理
-    for symbol in df['stock_code'].unique():
+    for symbol in tqdm(symbols, desc="处理股票", unit="股票"):
+        logger.debug(f"处理股票: {symbol}")
         symbol_df = df[df['stock_code'] == symbol].copy()
         
         # 确保 datetime 是索引
@@ -157,37 +199,149 @@ def compute_features_for_all_symbols(df: pd.DataFrame) -> Dict[str, pd.DataFrame
             logger.warning(f"无法为 {symbol} 设置 datetime 索引")
             continue
         
+        # 重新索引，确保包含所有日期（缺失的日期会填充为 NaN）
+        symbol_df = symbol_df.reindex(full_date_range)
+        
+        # 获取所有日期（包括缺失的日期）
+        dates = [pd.Timestamp(dt).strftime('%Y-%m-%d') for dt in symbol_df.index]
+        
+        # 批量从缓存获取（如果 force=False）
+        cached_data = {}
+        if not force:
+            cached_data = get_cached_features_batch(symbol, dates, feature_names)
+        
+        # 收集需要缓存的数据
+        features_to_cache = []
+        
         # 为每个特征计算值
-        for feature_name in feature_names:
+        for feature_name in tqdm(feature_names, desc=f"计算 {symbol} 的特征", leave=False, unit="特征"):
             feature_spec = get_feature(feature_name)
             if feature_spec is None:
+                logger.debug(f"跳过未找到的特征: {feature_name}")
                 continue
             
             try:
-                # 计算特征
-                feature_series = feature_spec.compute(symbol_df)
+                # 检查缓存中是否有该特征的所有日期数据
+                need_compute = force
+                if not need_compute:
+                    # 检查该特征是否有缺失的日期
+                    missing_dates = []
+                    for date in dates:
+                        if date not in cached_data or feature_name not in cached_data[date]:
+                            missing_dates.append(date)
+                    if missing_dates:
+                        need_compute = True
+                        logger.debug(f"特征 {feature_name} for {symbol}: 缓存中缺少 {len(missing_dates)} 个日期")
+                
+                if need_compute:
+                    logger.debug(f"计算特征: {feature_name} for {symbol}")
+                    # 计算特征
+                    feature_series = feature_spec.compute(symbol_df)
+                else:
+                    # 从缓存构建 Series
+                    logger.debug(f"从缓存加载特征: {feature_name} for {symbol}")
+                    feature_dict = {}
+                    for date in dates:
+                        if date in cached_data and feature_name in cached_data[date]:
+                            feature_dict[pd.Timestamp(date)] = cached_data[date][feature_name]
+                    feature_series = pd.Series(feature_dict)
                 
                 # 初始化结果 DataFrame（如果还没有）
                 if feature_name not in results:
                     results[feature_name] = pd.DataFrame()
                 
                 # 将结果添加到 DataFrame
-                if not feature_series.empty:
-                    # 确保索引对齐
-                    if results[feature_name].empty:
+                # 即使 feature_series 为空，也要添加列（可能所有值都是 NA）
+                # 这样绘图时可以看到该股票存在，只是没有数据
+                if results[feature_name].empty:
+                    # 如果结果 DataFrame 为空，使用 feature_series 的索引创建
+                    if not feature_series.empty:
                         results[feature_name] = pd.DataFrame(index=feature_series.index)
-                    results[feature_name][symbol] = feature_series
+                    else:
+                        # 如果 feature_series 也为空，使用 symbol_df 的索引
+                        results[feature_name] = pd.DataFrame(index=symbol_df.index)
+                
+                # 添加该股票的特征值（即使全为 NA）
+                # 使用 reindex 对齐索引，fill_value=None 表示缺失值填充为 NA
+                aligned_series = feature_series.reindex(results[feature_name].index, fill_value=None)
+                results[feature_name][symbol] = aligned_series
+                
+                original_non_null = feature_series.notna().sum()
+                aligned_non_null = aligned_series.notna().sum()
+                logger.debug(f"特征 {feature_name} for {symbol}: 计算完成, "
+                           f"原始: {len(feature_series)} 个值, {original_non_null} 个非空; "
+                           f"对齐后: {len(aligned_series)} 个值, {aligned_non_null} 个非空")
+                
+                # 收集需要缓存的数据（只缓存非 NA 的值）
+                if need_compute:
+                    for dt, value in feature_series.items():
+                        if pd.notna(value):  # 只缓存非 NA 的值
+                            date_str = pd.Timestamp(dt).strftime('%Y-%m-%d')
+                            features_to_cache.append((symbol, date_str, feature_name, value))
                     
             except Exception as e:
-                logger.warning(f"计算特征 {feature_name} 对于 {symbol} 时出错: {e}")
+                logger.warning(f"计算特征 {feature_name} 对于 {symbol} 时出错: {e}", exc_info=True)
                 continue
+        
+        # 批量缓存
+        if features_to_cache:
+            logger.debug(f"批量缓存 {len(features_to_cache)} 个特征值 for {symbol}")
+            cache_features_batch(features_to_cache)
     
     # 确保所有 DataFrame 的索引都是 datetime，并且对齐
+    logger.debug("对齐所有特征 DataFrame 的索引")
+    
+    # 使用之前确定的完整日期范围作为统一索引
+    # 这样确保所有特征 DataFrame 都包含从开始到结束的所有日期
+    unified_index = full_date_range
+    logger.debug(f"统一索引: {len(unified_index)} 个日期（从 {unified_index[0].date()} 到 {unified_index[-1].date()}）")
+    
+    # 为每个特征 DataFrame 统一索引
     for feature_name in results:
         if not results[feature_name].empty:
+            # 记录统一索引前的数据统计
+            before_data = {}
+            for col in results[feature_name].columns:
+                col_data = results[feature_name][col].dropna()
+                if len(col_data) > 0:
+                    before_data[col] = {
+                        'count': len(col_data),
+                        'min': col_data.min(),
+                        'max': col_data.max(),
+                        'mean': col_data.mean(),
+                        'unique': col_data.nunique()
+                    }
+            
             results[feature_name].index = pd.to_datetime(results[feature_name].index)
-            results[feature_name] = results[feature_name].sort_index()
+            # 重新索引，确保所有股票使用相同的日期索引
+            # 使用 method=None 确保不进行插值，只对齐索引
+            results[feature_name] = results[feature_name].reindex(unified_index, method=None).sort_index()
+            
+            # 记录统一索引后的数据统计
+            logger.debug(f"特征 {feature_name}: 统一索引后, {len(results[feature_name].columns)} 个股票")
+            for col in results[feature_name].columns:
+                col_data = results[feature_name][col].dropna()
+                if len(col_data) > 0:
+                    after_info = {
+                        'count': len(col_data),
+                        'min': col_data.min(),
+                        'max': col_data.max(),
+                        'mean': col_data.mean(),
+                        'unique': col_data.nunique()
+                    }
+                    before_info = before_data.get(col, {})
+                    if before_info.get('count', 0) != after_info['count']:
+                        logger.warning(f"  {col}: 数据点数量变化 {before_info.get('count', 0)} -> {after_info['count']}")
+                    if before_info.get('unique', 0) != after_info['unique']:
+                        logger.warning(f"  {col}: 唯一值数量变化 {before_info.get('unique', 0)} -> {after_info['unique']}")
+                    logger.debug(f"  {col}: {after_info['count']} 个数据点, "
+                               f"值范围: {after_info['min']:.4f} 到 {after_info['max']:.4f}, "
+                               f"{after_info['unique']} 个唯一值")
+        else:
+            # 如果为空，使用统一索引创建
+            results[feature_name] = pd.DataFrame(index=unified_index)
     
+    logger.info(f"特征计算完成: 共 {len(results)} 个特征")
     return results
 
 
@@ -245,7 +399,40 @@ def plot_feature_trends(
             skipped_count += 1
             continue
         
-        logger.info(f"绘制特征 {feature_name} 的趋势图（{len(valid_symbols)} 个symbols）...")
+        # 调试信息：显示每个股票的数据统计，并检查数据是否不同
+        logger.debug(f"特征 {feature_name} 的数据统计:")
+        symbol_data_samples = {}
+        for symbol in df.columns:
+            non_null_count = df[symbol].notna().sum()
+            total_count = len(df[symbol])
+            valid_data = df[symbol].dropna()
+            if len(valid_data) > 0:
+                symbol_data_samples[symbol] = {
+                    'count': len(valid_data),
+                    'min': valid_data.min(),
+                    'max': valid_data.max(),
+                    'mean': valid_data.mean(),
+                    'first_5': valid_data.head(5).tolist()
+                }
+            logger.debug(f"  {symbol}: {non_null_count}/{total_count} 非空值")
+        
+        # 检查是否有多个股票的数据完全相同
+        if len(symbol_data_samples) > 1:
+            data_signatures = {}
+            for symbol, data_info in symbol_data_samples.items():
+                # 使用前5个值和统计信息作为签名
+                sig = tuple(data_info['first_5'] + [data_info['mean'], data_info['min'], data_info['max']])
+                if sig not in data_signatures:
+                    data_signatures[sig] = []
+                data_signatures[sig].append(symbol)
+            
+            if len(data_signatures) < len(symbol_data_samples):
+                logger.warning(f"警告: 发现 {len(symbol_data_samples) - len(data_signatures)} 组股票的数据可能相同!")
+                for sig, symbols in data_signatures.items():
+                    if len(symbols) > 1:
+                        logger.warning(f"  以下股票的数据可能相同: {symbols}")
+        
+        logger.info(f"绘制特征 {feature_name} 的趋势图（{len(valid_symbols)} 个symbols: {valid_symbols}）...")
         
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
         
@@ -254,36 +441,63 @@ def plot_feature_trends(
         max_data_points = 0
         
         # 为每个 symbol 绘制一条线，使用不同的样式组合
+        plotted_lines = 0
         for idx, symbol in enumerate(valid_symbols):
             if df[symbol].notna().sum() == 0:
+                logger.debug(f"跳过 {symbol}：没有非空值")
                 continue
             
-            # 只绘制有数据的部分
-            valid_data = df[symbol].dropna()
-            if len(valid_data) > 0:
-                max_data_points = max(max_data_points, len(valid_data))
-                
-                # 根据数据点数量决定是否显示标记
-                marker_style = markers[idx % len(markers)] if len(valid_data) <= 50 else None
-                marker_size = 4 if len(valid_data) <= 30 else 2
-                
-                # 使用不同的线型和颜色
-                line_style = linestyles[idx % len(linestyles)]
-                line_width = 2.0 if idx < 5 else 1.5  # 前5个symbols用更粗的线
-                
-                ax.plot(
-                    valid_data.index, 
-                    valid_data.values, 
-                    label=symbol, 
-                    marker=marker_style,
-                    markersize=marker_size,
-                    markevery=max(1, len(valid_data) // 20),  # 每隔一定距离显示一个标记
-                    linestyle=line_style,
-                    linewidth=line_width,
-                    color=colors[idx],
-                    alpha=0.8,
-                    zorder=len(valid_symbols) - idx  # 后面的symbols在上层
-                )
+            # 获取该股票的所有数据（包括 NaN）
+            all_data = df[symbol]
+            
+            # 检查是否有有效数据
+            valid_data = all_data.dropna()
+            if len(valid_data) == 0:
+                logger.debug(f"跳过 {symbol}：dropna 后没有数据")
+                continue
+            
+            # 检查数据是否唯一（避免所有股票数据相同）
+            unique_values = valid_data.nunique()
+            if unique_values == 1 and len(valid_data) > 1:
+                logger.debug(f"警告: {symbol} 的所有数据点都相同: {valid_data.iloc[0]}")
+            
+            max_data_points = max(max_data_points, len(valid_data))
+            
+            # 根据数据点数量决定是否显示标记
+            marker_style = markers[idx % len(markers)] if len(valid_data) <= 50 else None
+            marker_size = 4 if len(valid_data) <= 30 else 2
+            
+            # 使用不同的线型和颜色
+            line_style = linestyles[idx % len(linestyles)]
+            line_width = 2.0 if idx < 5 else 1.5  # 前5个symbols用更粗的线
+            
+            logger.debug(f"绘制 {symbol}: {len(valid_data)} 个数据点, 值范围: {valid_data.min():.4f} 到 {valid_data.max():.4f}")
+            
+            # 使用 numpy.ma.masked_array 在缺失数据处断开连线
+            import numpy as np
+            import numpy.ma as ma
+            
+            # 创建 masked array，NaN 值会被 mask
+            masked_values = ma.masked_invalid(all_data.values)
+            masked_index = all_data.index
+            
+            # 绘制（masked array 会自动在缺失数据处断开）
+            ax.plot(
+                masked_index, 
+                masked_values, 
+                label=symbol, 
+                marker=marker_style,
+                markersize=marker_size,
+                markevery=max(1, len(valid_data) // 20),  # 每隔一定距离显示一个标记
+                linestyle=line_style,
+                linewidth=line_width,
+                color=colors[idx],
+                alpha=0.8,
+                zorder=len(valid_symbols) - idx  # 后面的symbols在上层
+            )
+            plotted_lines += 1
+        
+        logger.info(f"实际绘制了 {plotted_lines} 条线（共 {len(valid_symbols)} 个有效股票）")
         
         # 设置图表属性
         ax.set_title(f'{feature_name} 趋势图', fontsize=16, fontweight='bold', pad=15)
@@ -364,13 +578,13 @@ def print_feature_summary(feature_data: Dict[str, pd.DataFrame], output_file: Op
             valid_symbols = [s for s in df.columns if df[s].notna().sum() > 0]
             total_points = sum(df[s].notna().sum() for s in df.columns)
             summary_lines.append(
-                f"  ✓ {feature_name:20s} | Symbols: {len(valid_symbols):3d} | "
-                f"Data Points: {total_points:5d} | Status: OK"
+                f"  ✓ {feature_name:20s}\t| Symbols: {len(valid_symbols):3d}\t| "
+                f"Data Points: {total_points:5d}\t| Status: OK"
             )
         else:
             summary_lines.append(
-                f"  ✗ {feature_name:20s} | Symbols:    0 | "
-                f"Data Points:     0 | Status: NO DATA"
+                f"  ✗ {feature_name:20s}\t| Symbols:    0\t| "
+                f"Data Points:     0\t| Status: NO DATA"
             )
     
     summary_lines.append("\n" + "=" * 80)
@@ -395,7 +609,8 @@ def plot_all_features(
     output_dir: Optional[Path] = None,
     figsize: tuple = (14, 7),
     dpi: int = 150,
-    print_summary: bool = True
+    print_summary: bool = True,
+    force: bool = False
 ):
     """
     绘制所有 symbols 的所有特征走势图
@@ -435,7 +650,7 @@ def plot_all_features(
     
     # 计算特征
     logger.info("\n开始计算特征...")
-    feature_data = compute_features_for_all_symbols(df)
+    feature_data = compute_features_for_all_symbols(df, force=force)
     
     if not feature_data:
         logger.error("没有计算出任何特征")
@@ -468,6 +683,7 @@ def main():
                        help='图表大小（默认: 14 7）')
     parser.add_argument('--dpi', type=int, default=150, help='图表分辨率（默认: 150）')
     parser.add_argument('--no-summary', action='store_true', help='不打印特征汇总信息')
+    parser.add_argument('--force', action='store_true', help='强制重新计算，忽略缓存')
     
     args = parser.parse_args()
     
@@ -478,7 +694,8 @@ def main():
         output_dir=output_dir,
         figsize=tuple(args.figsize),
         dpi=args.dpi,
-        print_summary=not args.no_summary
+        print_summary=not args.no_summary,
+        force=args.force
     )
 
 

@@ -16,7 +16,6 @@ if str(project_root) not in sys.path:
 from trader.config import get_deepseek_api_key, DB_PATH
 from trader.logger import get_logger
 from trader.news.prepare import clean_html, parse_news_json
-from openai import OpenAI
 
 logger = get_logger(__name__)
 
@@ -193,6 +192,12 @@ def analyze(news_data: Union[str, Dict, List[Dict]]) -> Optional[Union[Dict, Lis
         return None
     
     try:
+        # 延迟导入 openai（只在需要时导入）
+        try:
+            from openai import OpenAI
+        except ImportError:
+            logger.error("未安装 openai 模块，无法进行新闻分析。请运行: pip install openai")
+            return None
         
         # 初始化 DeepSeek API 客户端
         logger.info("正在初始化 DeepSeek API 客户端...")

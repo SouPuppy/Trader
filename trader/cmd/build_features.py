@@ -8,6 +8,15 @@ from pathlib import Path
 import sys
 import pandas as pd
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    # 如果 tqdm 未安装，使用一个简单的替代实现
+    def tqdm(iterable, desc=None, total=None, **kwargs):
+        if desc:
+            print(f"{desc}...")
+        return iterable
+
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
@@ -17,6 +26,7 @@ from trader.config import DB_PATH
 from trader.logger import get_logger
 from trader.features.registry import FEATURES as REGISTRY_FEATURES, get_feature as get_feature_spec, get_all_features, get_feature_names
 from trader.features import features  # 导入特征定义以触发注册
+from trader.features.cache import get_cached_feature, cache_feature, ensure_features_table
 
 logger = get_logger(__name__)
 
@@ -117,7 +127,7 @@ def load_stock_data_for_date(symbol: str, date: str, lookback: int = 0) -> pd.Da
         return pd.DataFrame()
 
 
-def compute_feature(feature_name: str, date: str, symbol: str) -> Optional[float]:
+def compute_feature(feature_name: str, date: str, symbol: str, force: bool = False) -> Optional[float]:
     """
     计算指定特征的值（便捷接口）
     
@@ -125,24 +135,40 @@ def compute_feature(feature_name: str, date: str, symbol: str) -> Optional[float
         feature_name: 特征名称
         date: 日期字符串，格式如 "2023-01-03"
         symbol: 股票代码，如 "AAPL.O"
+        force: 是否强制重新计算，忽略缓存
         
     Returns:
         特征值（float），如果不存在则返回 None
     """
+    logger.debug(f"计算特征: {feature_name} for {symbol} on {date}, force={force}")
+    
+    # 检查缓存（如果 force=False）
+    if not force:
+        cached_value = get_cached_feature(symbol, date, feature_name)
+        if cached_value is not None:
+            logger.debug(f"从缓存获取特征: {feature_name} for {symbol} on {date} = {cached_value}")
+            return cached_value
+    
     feature_spec = get_feature_spec(feature_name)
     if feature_spec is None:
         logger.warning(f"未知的特征名称: {feature_name}")
         return None
     
     # 加载数据
+    logger.debug(f"加载股票数据: {symbol}, date={date}, lookback={feature_spec.lookback}")
     df = load_stock_data_for_date(symbol, date, lookback=feature_spec.lookback)
     if df.empty:
+        logger.debug(f"未找到股票数据: {symbol} on {date}")
         return None
+    
+    logger.debug(f"加载了 {len(df)} 行数据")
     
     # 计算特征
     try:
+        logger.debug(f"执行特征计算函数: {feature_name}")
         result_series = feature_spec.compute(df)
         if result_series.empty:
+            logger.debug(f"特征计算结果为空: {feature_name}")
             return None
         # 返回最新值（最后一行，对应指定日期）
         # 如果 DataFrame 有 datetime 索引，尝试找到对应日期的值
@@ -156,26 +182,39 @@ def compute_feature(feature_name: str, date: str, symbol: str) -> Optional[float
         else:
             value = result_series.iloc[-1]
         
-        return float(value) if pd.notna(value) else None
+        result = float(value) if pd.notna(value) else None
+        logger.debug(f"特征 {feature_name} 计算结果: {result}")
+        
+        # 存储到缓存
+        cache_feature(symbol, date, feature_name, result)
+        
+        return result
     except Exception as e:
         logger.error(f"计算特征 {feature_name} 时出错: {e}", exc_info=True)
         return None
 
 
-def compute_all_features(date: str, symbol: str) -> Dict[str, Optional[float]]:
+def compute_all_features(date: str, symbol: str, force: bool = False) -> Dict[str, Optional[float]]:
     """
     计算所有特征的值
     
     Args:
         date: 日期字符串，格式如 "2023-01-03"
         symbol: 股票代码，如 "AAPL.O"
+        force: 是否强制重新计算，忽略缓存
         
     Returns:
         包含所有特征名称和值的字典
     """
+    # 确保 features 表存在
+    ensure_features_table()
+    
+    feature_names = get_feature_names()
+    logger.info(f"开始计算所有特征: {symbol} on {date}, 共 {len(feature_names)} 个特征, force={force}")
     result = {}
-    for feature_name in get_feature_names():
-        result[feature_name] = compute_feature(feature_name, date, symbol)
+    for feature_name in tqdm(feature_names, desc=f"计算特征 ({symbol})", unit="特征"):
+        result[feature_name] = compute_feature(feature_name, date, symbol, force=force)
+    logger.info(f"特征计算完成: {symbol} on {date}, 共 {len(result)} 个特征")
     return result
 
 
@@ -226,6 +265,7 @@ def main():
     parser.add_argument('--feature', type=str, help='特征名称（可选，不指定则计算所有特征）')
     parser.add_argument('--list', action='store_true', help='列出所有可用的特征')
     parser.add_argument('--info', type=str, help='显示特征的详细信息')
+    parser.add_argument('--force', action='store_true', help='强制重新计算，忽略缓存')
     
     args = parser.parse_args()
     
@@ -263,13 +303,13 @@ def main():
     
     if args.feature:
         # 计算单个特征
-        value = compute_feature(args.feature, args.date, args.symbol)
-        print(f"特征 {args.feature} (date={args.date}, symbol={args.symbol}): {value}")
+        value = compute_feature(args.feature, args.date, args.symbol, force=args.force)
+        print(f"特征 {args.feature} (date={args.date}, symbol={args.symbol}, force={args.force}): {value}")
     else:
         # 计算所有特征
-        print(f"计算所有特征 (date={args.date}, symbol={args.symbol}):")
+        print(f"计算所有特征 (date={args.date}, symbol={args.symbol}, force={args.force}):")
         print("-" * 60)
-        results = compute_all_features(args.date, args.symbol)
+        results = compute_all_features(args.date, args.symbol, force=args.force)
         for feature_name, value in results.items():
             print(f"  {feature_name:20s}: {value}")
 

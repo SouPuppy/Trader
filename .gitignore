@@ -10,8 +10,8 @@ __pycache__/
 poetry.lock
 
 # datas (this should be auto generated)
-data/data.sqlite3
-data/data.csv
+data/data.sqlite3*
+data/data.csv*
 
 # Logs
 logs/

@@ -227,32 +227,6 @@ def get_news_summary(news_data: str) -> Dict:
     }
 
 
-def ensure_news_data_table():
-    """确保 news_data 表存在并具有正确的 schema"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # 创建 news_data 表
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS news_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            uuid TEXT UNIQUE NOT NULL,
-            paraphrase TEXT,
-            sentiment INTEGER CHECK(sentiment >= -10 AND sentiment <= 10),
-            impact INTEGER CHECK(impact >= 0 AND impact <= 10),
-            publish_date TEXT
-        )
-        """
-        
-        cursor.execute(create_table_sql)
-        conn.commit()
-        logger.debug("news_data 表已确保存在")
-        
-        conn.close()
-    except Exception as e:
-        logger.error(f"确保 news_data 表失败: {e}", exc_info=True)
-        raise
 
 
 def ensure_analyzed_column():
@@ -394,14 +368,14 @@ def count_unanalyzed_news() -> Dict[str, int]:
 
 def process_unanalyzed_news(limit: int = 1) -> Dict[str, int]:
     """
-    处理未分析的新闻：分析并保存到 news_data 表
+    处理未分析的新闻：分析新闻（不再保存到 news_data 表，特征计算时会实时分析）
+    
+    注意：此函数现在仅用于测试或调试目的。实际的特征计算会直接从 raw_data 表的 news 字段解析并实时分析。
     
     流程：
     1. 找到 analyzed = false 的记录
-    2. 如果该记录在 news_data 中有记录（通过 publish_date 匹配），先删除并 warning（防止部分数据）
-    3. 使用 analyze 处理新闻
-    4. 处理完后存入 news_data 数据库
-    5. 最后把 analyzed 设置为 true（保证原子操作）
+    2. 使用 analyze 处理新闻
+    3. 更新 analyzed 字段为 true（标记为已处理）
     
     Args:
         limit: 每次处理的记录数，默认为 1
@@ -416,7 +390,6 @@ def process_unanalyzed_news(limit: int = 1) -> Dict[str, int]:
         from trader.news.analyze import analyze
         
         ensure_analyzed_column()
-        ensure_news_data_table()
         
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -473,79 +446,96 @@ def process_unanalyzed_news(limit: int = 1) -> Dict[str, int]:
                     skipped += 1
                     continue
                 
-                # 提取 publish_time 并转换为 UTC
-                publish_time_str = news_dict.get('publish_time', '')
-                publish_date = convert_publish_time_to_utc(publish_time_str) if publish_time_str else None
+                # 解析新闻 JSON，获取所有新闻项
+                if isinstance(news_obj, list):
+                    news_list = news_obj
+                else:
+                    news_list = [news_obj]
                 
-                # 进行分析（在事务外进行，因为这是外部 API 调用，可能耗时较长）
-                logger.info(f"记录 ID {raw_data_id} (stock_code={stock_code}): 开始分析新闻...")
-                analysis_result = analyze(news_dict)
+                # 分析所有新闻并聚合结果
+                sentiments = []
+                impacts = []
+                weighted_sentiment_sum = 0.0
+                impact_sum = 0.0
+                news_count = 0
                 
-                if not analysis_result:
-                    logger.error(f"记录 ID {raw_data_id}: 分析失败")
-                    failed += 1
-                    continue
+                for news_item in news_list:
+                    if not isinstance(news_item, dict):
+                        continue
+                    
+                    item_dict = {
+                        'publish_time': news_item.get('publish_time', ''),
+                        'title': news_item.get('title', ''),
+                        'content': news_item.get('content', '')
+                    }
+                    
+                    if not item_dict['title'] and not item_dict['content']:
+                        continue
+                    
+                    # 进行分析（在事务外进行，因为这是外部 API 调用，可能耗时较长）
+                    try:
+                        analysis_result = analyze(item_dict)
+                        if analysis_result:
+                            sentiment = analysis_result.get('sentiment', 0)
+                            impact = analysis_result.get('impact', 0)
+                            sentiments.append(sentiment)
+                            impacts.append(impact)
+                            weighted_sentiment_sum += sentiment * impact
+                            impact_sum += impact
+                            news_count += 1
+                    except Exception as e:
+                        logger.debug(f"记录 ID {raw_data_id}: 分析单条新闻失败: {e}")
+                        continue
                 
-                # 开始显式事务（保证原子操作：删除旧记录、插入新记录、更新 analyzed 字段）
-                # SQLite 默认 autocommit，我们需要显式管理事务
+                # 计算聚合值
+                if news_count > 0:
+                    sentiment_mean = sum(sentiments) / len(sentiments)
+                    impact_mean = sum(impacts) / len(impacts)
+                    weighted_sentiment = weighted_sentiment_sum / impact_sum if impact_sum > 0 else 0.0
+                else:
+                    # 如果没有成功分析的新闻，使用默认值
+                    sentiment_mean = 0.0
+                    impact_mean = 0.0
+                    impact_sum = 0.0
+                    weighted_sentiment = 0.0
+                    logger.warning(f"记录 ID {raw_data_id}: 没有成功分析的新闻")
+                
+                # 更新 raw_data 表，存储分析结果
                 try:
-                    # 检查并删除 news_data 中可能存在的部分记录（通过 publish_date 匹配）
-                    if publish_date:
-                        cursor.execute("""
-                            SELECT id, uuid FROM news_data 
-                            WHERE publish_date = ?
-                        """, (publish_date,))
-                        
-                        existing_records = cursor.fetchall()
-                        if existing_records:
-                            logger.warning(
-                                f"记录 ID {raw_data_id}: 发现 news_data 表中存在部分数据 "
-                                f"（publish_date={publish_date}），共 {len(existing_records)} 条记录，正在删除..."
-                            )
-                            for record in existing_records:
-                                cursor.execute("DELETE FROM news_data WHERE id = ?", (record['id'],))
-                                logger.warning(f"已删除 news_data 记录 ID {record['id']}, UUID {record['uuid']}")
-                    
-                    # 生成 UUID
-                    news_uuid = str(uuid.uuid4())
-                    
-                    # 插入到 news_data 表
-                    insert_sql = """
-                    INSERT INTO news_data (uuid, paraphrase, sentiment, impact, publish_date)
-                    VALUES (?, ?, ?, ?, ?)
+                    update_sql = """
+                    UPDATE raw_data 
+                    SET analyzed = 1,
+                        news_sentiment_mean = ?,
+                        news_impact_mean = ?,
+                        news_impact_sum = ?,
+                        news_count = ?,
+                        news_weighted_sentiment = ?
+                    WHERE id = ?
                     """
-                    
-                    cursor.execute(insert_sql, (
-                        news_uuid,
-                        analysis_result.get('paraphrase', ''),
-                        analysis_result.get('sentiment', 0),
-                        analysis_result.get('impact', 0),
-                        publish_date
+                    cursor.execute(update_sql, (
+                        sentiment_mean,
+                        impact_mean,
+                        impact_sum,
+                        news_count,
+                        weighted_sentiment,
+                        raw_data_id
                     ))
-                    
-                    # 更新 raw_data 表的 analyzed 字段为 1
-                    update_sql = "UPDATE raw_data SET analyzed = 1 WHERE id = ?"
-                    cursor.execute(update_sql, (raw_data_id,))
-                    
-                    # 提交事务（保证原子操作）
                     conn.commit()
                     
                     processed += 1
                     logger.info(
-                        f"记录 ID {raw_data_id}: 分析完成并保存成功 "
-                        f"(UUID={news_uuid}, sentiment={analysis_result.get('sentiment')}, "
-                        f"impact={analysis_result.get('impact')})"
+                        f"记录 ID {raw_data_id}: 分析完成并保存 "
+                        f"(count={news_count}, sentiment_mean={sentiment_mean:.2f}, "
+                        f"impact_mean={impact_mean:.2f})"
                     )
                     
                 except Exception as e:
-                    # 如果处理失败，回滚当前记录的事务
                     conn.rollback()
                     logger.error(f"记录 ID {raw_data_id}: 数据库操作失败: {e}", exc_info=True)
                     failed += 1
                     continue
                 
             except Exception as e:
-                # 如果处理失败，回滚当前记录的事务
                 conn.rollback()
                 logger.error(f"记录 ID {raw_data_id}: 处理失败: {e}", exc_info=True)
                 failed += 1
