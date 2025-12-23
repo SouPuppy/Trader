@@ -53,6 +53,7 @@ class BacktestReport:
         
         # 记录每日账户状态
         self.daily_records: List[Dict] = []
+        self.train_test_split_date: Optional[str] = None  # 训练/测试分割日期（用于图表显示）
         
         # 初始化 Jinja2 环境
         template_dir = Path(__file__).parent
@@ -108,6 +109,11 @@ class BacktestReport:
                     "profit": (price - position["average_price"]) * position["shares"]
                 }
         
+        # 判断是否在测试期
+        is_test_period = False
+        if self.train_test_split_date:
+            is_test_period = date >= self.train_test_split_date
+        
         record = {
             "date": date,
             "cash": account.cash,
@@ -115,10 +121,20 @@ class BacktestReport:
             "equity": equity,
             "profit": profit,
             "return_pct": return_pct,
-            "positions": positions_detail.copy()
+            "positions": positions_detail.copy(),
+            "is_test_period": is_test_period
         }
         
         self.daily_records.append(record)
+    
+    def set_train_test_split_date(self, split_date: Optional[str]):
+        """
+        设置训练/测试分割日期
+        
+        Args:
+            split_date: 分割日期（格式: YYYY-MM-DD），如果为 None 则不分割
+        """
+        self.train_test_split_date = split_date
     
     def generate_report(self, account, stock_code: str, start_date: str, end_date: str):
         """
@@ -958,15 +974,58 @@ class BacktestReport:
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values('date')
         
-        # 计算统计信息
-        equities = df['equity'].tolist()
-        returns = df['return_pct'].tolist()
+        # 分离训练期和测试期的数据（如果存在 is_test_period 字段）
+        if 'is_test_period' in df.columns:
+            train_df = df[~df['is_test_period']].copy()
+            test_df = df[df['is_test_period']].copy()
+        else:
+            train_df = pd.DataFrame()
+            test_df = pd.DataFrame()
+        
+        # 只使用测试期数据绘制图表（如果有测试期数据）
+        if not test_df.empty and self.train_test_split_date:
+            display_df = test_df.copy()
+            # 获取测试期开始时的权益作为初始资金
+            test_start_equity = test_df.iloc[0]['equity']
+        else:
+            # 如果没有测试期数据，使用全部数据
+            display_df = df.copy()
+            test_start_equity = self.daily_records[0]['equity']
+        
+        # 计算统计信息（基于显示的数据）
+        equities = display_df['equity'].tolist()
+        returns = display_df['return_pct'].tolist()
         max_drawdown = self._calculate_max_drawdown(equities)
         
-        # 计算夏普比率
-        daily_returns, sharpe_info = self._calculate_daily_returns(risk_free_rate_annual=0.0)
+        # 计算夏普比率（基于显示的数据）
+        # 如果只显示测试期，需要重新计算基于测试期的日收益率
+        if not test_df.empty and self.train_test_split_date:
+            # 只使用测试期数据计算日收益率
+            test_equities = test_df['equity'].tolist()
+            test_daily_returns = []
+            for i in range(1, len(test_equities)):
+                if test_equities[i-1] > 0:
+                    ret = (test_equities[i] / test_equities[i-1]) - 1.0
+                    test_daily_returns.append(ret)
+            
+            # 计算测试期的夏普比率
+            if test_daily_returns:
+                mean_return = sum(test_daily_returns) / len(test_daily_returns)
+                variance = sum((r - mean_return) ** 2 for r in test_daily_returns) / (len(test_daily_returns) - 1) if len(test_daily_returns) > 1 else 0.0
+                std_return = math.sqrt(variance) if variance > 0 else 0.0
+                sharpe_daily = (mean_return / std_return) if std_return > 0 else 0.0
+                sharpe_info = {
+                    'daily_returns': test_daily_returns,
+                    'sharpe_daily': sharpe_daily,
+                    'risk_free_rate_daily': 0.0
+                }
+            else:
+                sharpe_info = None
+            daily_returns = test_daily_returns
+        else:
+            daily_returns, sharpe_info = self._calculate_daily_returns(risk_free_rate_annual=0.0)
         
-        # 计算回撤序列
+        # 计算回撤序列（基于显示的数据）
         drawdowns = []
         peak = equities[0]
         for equity in equities:
@@ -974,9 +1033,9 @@ class BacktestReport:
                 peak = equity
             dd = (peak - equity) / peak * 100
             drawdowns.append(dd)
-        df['drawdown'] = drawdowns
+        display_df['drawdown'] = drawdowns
         
-        # 计算滚动夏普比率（30天窗口）
+        # 计算滚动夏普比率（30天窗口，基于显示的数据）
         rolling_sharpe = []
         rolling_sharpe_dates = []
         if sharpe_info and len(sharpe_info['daily_returns']) >= 30:
@@ -985,7 +1044,12 @@ class BacktestReport:
             window = 30
             
             # 获取日期（从第二天开始，因为日收益率从第二天开始）
-            dates_for_returns = df['date'].iloc[1:].tolist()
+            dates_for_returns = display_df['date'].iloc[1:].tolist()
+            
+            # 确保日期和收益率数量匹配
+            min_len = min(len(daily_returns_list), len(dates_for_returns))
+            daily_returns_list = daily_returns_list[:min_len]
+            dates_for_returns = dates_for_returns[:min_len]
             
             for i in range(window - 1, len(daily_returns_list)):
                 # 获取窗口内的收益率
@@ -1012,14 +1076,21 @@ class BacktestReport:
         
         # 创建图表 - 5个子图：权益、回撤、现金/持仓、收益率、滚动夏普
         fig, axes = plt.subplots(5, 1, figsize=(12, 14))
-        # 使用 title 和股票代码作为图表标题
-        fig.suptitle(f'{self.title} - {stock_code} ({start_date} to {end_date})', fontsize=14)
+        # 使用 title 和股票代码作为图表标题（只显示测试期日期范围）
+        if not test_df.empty and self.train_test_split_date:
+            test_start = test_df.iloc[0]['date'].strftime('%Y-%m-%d')
+            test_end = test_df.iloc[-1]['date'].strftime('%Y-%m-%d')
+            fig.suptitle(f'{self.title} - {stock_code} (Test Period: {test_start} to {test_end})', fontsize=14)
+        else:
+            fig.suptitle(f'{self.title} - {stock_code} ({start_date} to {end_date})', fontsize=14)
         
-        # 1. 账户权益曲线
+        # 1. 账户权益曲线（只显示测试期数据）
         ax1 = axes[0]
-        ax1.plot(df['date'], df['equity'], label='Total Equity', linewidth=2, color='blue')
-        ax1.axhline(y=self.daily_records[0]['equity'], color='gray', linestyle='--', 
-                   label=f'Initial Capital ({self.daily_records[0]["equity"]:,.0f})', alpha=0.7)
+        ax1.plot(display_df['date'], display_df['equity'], label='Total Equity', 
+                linewidth=2, color='blue')
+        
+        ax1.axhline(y=test_start_equity, color='gray', linestyle='--', 
+                   label=f'Starting Equity ({test_start_equity:,.0f})', alpha=0.7)
         ax1.set_ylabel('Equity (CNY)', fontsize=10)
         ax1.set_title('Total Equity Trend', fontsize=12)
         ax1.legend(loc='best')
@@ -1028,10 +1099,10 @@ class BacktestReport:
         ax1.xaxis.set_major_locator(mdates.MonthLocator())
         plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
         
-        # 2. 回撤曲线
+        # 2. 回撤曲线（只显示测试期数据）
         ax2 = axes[1]
-        ax2.fill_between(df['date'], df['drawdown'], 0, alpha=0.3, color='red', label='Drawdown')
-        ax2.plot(df['date'], df['drawdown'], linewidth=1.5, color='darkred')
+        ax2.fill_between(display_df['date'], display_df['drawdown'], 0, alpha=0.3, color='red', label='Drawdown')
+        ax2.plot(display_df['date'], display_df['drawdown'], linewidth=1.5, color='darkred')
         ax2.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
         ax2.set_ylabel('Drawdown (%)', fontsize=10)
         ax2.set_title(f'Drawdown Trend (Max: {max_drawdown:.2f}%)', fontsize=12)
@@ -1041,10 +1112,10 @@ class BacktestReport:
         ax2.xaxis.set_major_locator(mdates.MonthLocator())
         plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
         
-        # 3. 现金和持仓市值
+        # 3. 现金和持仓市值（只显示测试期数据）
         ax3 = axes[2]
-        ax3.plot(df['date'], df['cash'], label='Cash', linewidth=1.5, color='green')
-        ax3.plot(df['date'], df['positions_value'], label='Positions Value', linewidth=1.5, color='orange')
+        ax3.plot(display_df['date'], display_df['cash'], label='Cash', linewidth=1.5, color='green')
+        ax3.plot(display_df['date'], display_df['positions_value'], label='Positions Value', linewidth=1.5, color='orange')
         ax3.set_ylabel('Amount (CNY)', fontsize=10)
         ax3.set_title('Cash vs Positions Value', fontsize=12)
         ax3.legend(loc='best')
@@ -1053,9 +1124,10 @@ class BacktestReport:
         ax3.xaxis.set_major_locator(mdates.MonthLocator())
         plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
         
-        # 4. 收益率曲线
+        # 4. 收益率曲线（只显示测试期数据）
         ax4 = axes[3]
-        ax4.plot(df['date'], df['return_pct'], label='Return Rate', linewidth=2, color='red')
+        ax4.plot(display_df['date'], display_df['return_pct'], label='Return Rate', 
+                linewidth=2, color='red')
         ax4.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
         ax4.set_ylabel('Return Rate (%)', fontsize=10)
         ax4.set_title('Cumulative Return Trend', fontsize=12)

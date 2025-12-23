@@ -18,6 +18,7 @@ from trader.features.cache import (
     get_cached_all_features,
     get_cached_features_batch
 )
+from trader.dataloader import dataloader_ffill, Dataloader
 from trader.logger import get_logger
 
 logger = get_logger(__name__)
@@ -64,7 +65,8 @@ class BacktestEngine:
     """回测引擎"""
     
     def __init__(self, account: Account, market: Market, enable_report: bool = True, 
-                 report_output_dir: Optional[Path] = None, report_title: Optional[str] = None):
+                 report_output_dir: Optional[Path] = None, report_title: Optional[str] = None,
+                 train_test_split_ratio: float = 0.7):
         """
         初始化回测引擎
         
@@ -74,6 +76,7 @@ class BacktestEngine:
             enable_report: 是否启用报告生成
             report_output_dir: 报告输出目录，如果为 None 则使用默认目录
             report_title: 报告标题，用于创建子文件夹和文件名
+            train_test_split_ratio: 训练/测试分割比例（默认0.7，即70%用于训练，30%用于测试）
         """
         self.account = account
         self.market = market
@@ -83,6 +86,8 @@ class BacktestEngine:
         self.trading_dates: List[str] = []
         self.on_date_callbacks: List[Callable] = []  # 每个交易日回调函数列表
         self.enable_report = enable_report
+        self.train_test_split_ratio = train_test_split_ratio
+        self.train_test_split_date: Optional[str] = None  # 训练/测试分割日期（在 run 时计算）
         self.report: Optional[BacktestReport] = None
         if enable_report:
             self.report = BacktestReport(report_output_dir, title=report_title)
@@ -106,6 +111,12 @@ class BacktestEngine:
             shares: 买入股数（可选）
             amount: 买入金额（可选，与 shares 二选一）
         """
+        # 检查是否在训练期（训练期不允许交易）
+        if self.train_test_split_date and self.current_date:
+            if self.current_date < self.train_test_split_date:
+                logger.debug(f"训练期禁止交易，跳过买入订单: {stock_code}")
+                return
+        
         action = Action(Action.BUY, stock_code, shares=shares, amount=amount, date=self.current_date)
         self.add_action(action)
     
@@ -117,6 +128,12 @@ class BacktestEngine:
             stock_code: 股票代码
             shares: 卖出股数
         """
+        # 检查是否在训练期（训练期不允许交易）
+        if self.train_test_split_date and self.current_date:
+            if self.current_date < self.train_test_split_date:
+                logger.debug(f"训练期禁止交易，跳过卖出订单: {stock_code}")
+                return
+        
         action = Action(Action.SELL, stock_code, shares=shares, date=self.current_date)
         self.add_action(action)
     
@@ -131,6 +148,15 @@ class BacktestEngine:
     
     def _execute_actions(self):
         """执行队列中的所有行为"""
+        # 检查是否在训练期（如果设置了分割日期，训练期不允许交易）
+        if self.train_test_split_date and self.current_date:
+            if self.current_date < self.train_test_split_date:
+                # 训练期，清空队列，不允许交易
+                while self.action_queue:
+                    action = self.action_queue.popleft()
+                    logger.debug(f"训练期禁止交易，跳过行为: {action}")
+                return
+        
         while self.action_queue:
             action = self.action_queue.popleft()
             
@@ -198,6 +224,19 @@ class BacktestEngine:
             logger.error(f"在指定日期范围内没有交易数据")
             return
         
+        # 计算训练/测试分割日期
+        if self.train_test_split_ratio > 0 and self.train_test_split_ratio < 1:
+            split_index = int(len(self.trading_dates) * self.train_test_split_ratio)
+            if split_index > 0 and split_index < len(self.trading_dates):
+                self.train_test_split_date = self.trading_dates[split_index]
+                # 设置到报告中
+                if self.report:
+                    self.report.set_train_test_split_date(self.train_test_split_date)
+                logger.info(
+                    f"训练/测试分割: {self.train_test_split_ratio*100:.0f}% / {(1-self.train_test_split_ratio)*100:.0f}%, "
+                    f"分割日期: {self.train_test_split_date}"
+                )
+        
         logger.info(f"开始回测: {start_date} 至 {end_date}, 共 {len(self.trading_dates)} 个交易日")
         
         # 按日期循环
@@ -235,6 +274,34 @@ class BacktestEngine:
                 logger.info(f"回测报告已生成: {report_file}")
             except Exception as e:
                 logger.error(f"生成报告时出错: {e}", exc_info=True)
+    
+    def is_in_test_period(self, date: Optional[str] = None) -> bool:
+        """
+        判断指定日期是否在测试期
+        
+        Args:
+            date: 日期（格式: YYYY-MM-DD），如果为 None 则使用当前日期
+            
+        Returns:
+            bool: 是否在测试期
+        """
+        if not self.train_test_split_date:
+            return False
+        
+        check_date = date if date else self.current_date
+        if not check_date:
+            return False
+        
+        return check_date >= self.train_test_split_date
+    
+    def get_train_test_split_date(self) -> Optional[str]:
+        """
+        获取训练/测试分割日期
+        
+        Returns:
+            Optional[str]: 分割日期（格式: YYYY-MM-DD），如果未设置则返回 None
+        """
+        return self.train_test_split_date
     
     def get_current_price(self, stock_code: str) -> Optional[float]:
         """
@@ -561,4 +628,133 @@ class BacktestEngine:
         access_end_date = self._check_date_access(end_date)
         return self.market.get_price_data(stock_code, start_date=start_date, 
                                          end_date=access_end_date)
+    
+    def get_features_with_dataloader(self, stock_code: str, 
+                                    start_date: Optional[str] = None,
+                                    end_date: Optional[str] = None,
+                                    feature_names: Optional[List[str]] = None,
+                                    dataloader: Optional[Dataloader] = None,
+                                    force: bool = False) -> pd.DataFrame:
+        """
+        使用 dataloader 获取特征数据（带日期保护和数据补全）
+        
+        该方法使用 dataloader 加载从开始日期到结束日期的所有特征，支持数据补全。
+        默认使用 ffill（前向填充）补全缺失数据。
+        
+        Args:
+            stock_code: 股票代码
+            start_date: 开始日期（格式: YYYY-MM-DD），如果为 None 则从最早开始
+            end_date: 结束日期（格式: YYYY-MM-DD），如果为 None 则使用当前日期
+            feature_names: 要加载的特征名称列表，如果为 None 则加载所有特征
+            dataloader: 数据加载器实例，如果为 None 则使用默认的 dataloader_ffill
+            force: 是否强制重新计算，忽略缓存
+            
+        Returns:
+            pd.DataFrame: 特征数据，索引为日期，列为特征名称
+            所有缺失值（包括节假日）都会根据 dataloader 的策略进行补全
+            
+        Raises:
+            ValueError: 如果尝试访问未来数据
+        """
+        access_end_date = self._check_date_access(end_date)
+        
+        # 如果没有指定开始日期，从最早可用日期开始
+        if start_date is None:
+            available_dates = self.market.get_available_dates(stock_code)
+            if not available_dates:
+                logger.warning(f"未找到股票 {stock_code} 的数据")
+                return pd.DataFrame()
+            start_date = available_dates[0]
+        
+        # 使用默认的 ffill dataloader（如果未指定）
+        if dataloader is None:
+            dataloader = dataloader_ffill(stock_code)
+        
+        # 使用 dataloader 加载数据
+        logger.debug(f"使用 dataloader 加载特征: {stock_code} from {start_date} to {access_end_date}")
+        result = dataloader.load(start_date, access_end_date, feature_names, force=force)
+        
+        # 确保日期索引是 datetime 类型
+        if not result.empty and not isinstance(result.index, pd.DatetimeIndex):
+            try:
+                result.index = pd.to_datetime(result.index)
+            except Exception as e:
+                logger.warning(f"无法将索引转换为 DatetimeIndex: {e}")
+        
+        logger.debug(f"dataloader 加载完成: {stock_code}, 共 {len(result)} 行, {len(result.columns)} 列")
+        return result
+    
+    def get_features_for_date_with_dataloader(self, stock_code: str,
+                                             date: Optional[str] = None,
+                                             feature_names: Optional[List[str]] = None,
+                                             dataloader: Optional[Dataloader] = None,
+                                             force: bool = False) -> Dict[str, Optional[float]]:
+        """
+        使用 dataloader 获取指定日期的特征值（带日期保护和数据补全）
+        
+        这是一个便捷方法，用于获取单个日期的所有特征值。
+        内部使用 get_features_with_dataloader 加载数据，然后返回指定日期的行。
+        
+        Args:
+            stock_code: 股票代码
+            date: 日期（格式: YYYY-MM-DD），如果为 None 则使用当前日期
+            feature_names: 要加载的特征名称列表，如果为 None 则加载所有特征
+            dataloader: 数据加载器实例，如果为 None 则使用默认的 dataloader_ffill
+            force: 是否强制重新计算，忽略缓存
+            
+        Returns:
+            Dict[str, Optional[float]]: {feature_name: value} 特征值字典
+            
+        Raises:
+            ValueError: 如果尝试访问未来数据
+        """
+        access_date = self._check_date_access(date)
+        
+        # 使用 dataloader 加载数据（从当前日期往前加载一些历史数据，以确保补全）
+        # 这里我们加载从当前日期往前 30 天的数据，以确保有足够的历史数据用于补全
+        from datetime import datetime, timedelta
+        try:
+            date_obj = datetime.strptime(access_date, "%Y-%m-%d")
+            start_date_obj = date_obj - timedelta(days=30)
+            start_date = start_date_obj.strftime("%Y-%m-%d")
+        except ValueError:
+            start_date = access_date
+        
+        df = self.get_features_with_dataloader(
+            stock_code, 
+            start_date=start_date,
+            end_date=access_date,
+            feature_names=feature_names,
+            dataloader=dataloader,
+            force=force
+        )
+        
+        if df.empty:
+            logger.warning(f"未找到 {stock_code} 在 {access_date} 的特征数据")
+            return {}
+        
+        # 获取指定日期的数据
+        try:
+            date_dt = pd.to_datetime(access_date)
+            if date_dt in df.index:
+                row = df.loc[date_dt]
+            else:
+                # 如果没有精确匹配，返回最新值（不超过访问日期）
+                available_rows = df[df.index <= date_dt]
+                if available_rows.empty:
+                    logger.warning(f"未找到 {stock_code} 在 {access_date} 或之前的数据")
+                    return {}
+                row = available_rows.iloc[-1]
+            
+            # 转换为字典
+            result = {}
+            for col in df.columns:
+                value = row[col]
+                result[col] = float(value) if pd.notna(value) else None
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"获取 {stock_code} 在 {access_date} 的特征数据时出错: {e}", exc_info=True)
+            return {}
 
