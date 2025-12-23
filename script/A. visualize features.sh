@@ -17,7 +17,7 @@ python -m trader.cmd.build_features --list
 
 echo ""
 echo "开始生成图表..."
-python -m trader.visualize.daily_features --output "$OUTPUT_DIR"
+python -m trader.features.visualize.daily_features --output "$OUTPUT_DIR"
 
 echo ""
 echo "=========================================="

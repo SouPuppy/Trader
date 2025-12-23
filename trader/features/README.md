@@ -46,7 +46,7 @@ python -m trader.cmd.build_features --list
 python -m trader.cmd.build_features --date 2023-01-03 --symbol AAPL.O --feature ret_1d
 
 # 生成图表
-python -m trader.visualize.daily_features --output ./output/features
+python -m trader.features.visualize.daily_features --output ./output/features
 ```
 
 ## 注意事项

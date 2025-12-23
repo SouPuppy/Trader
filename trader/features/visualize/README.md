@@ -16,13 +16,13 @@
 
 ```bash
 # 生成所有股票的所有特征图表
-python -m trader.visualize.daily_features --output ./output/features
+python -m trader.features.visualize.daily_features --output ./output/features
 
 # 生成指定股票的特征图表
-python -m trader.visualize.daily_features --symbols AAPL.O MSFT.O --output ./output/features
+python -m trader.features.visualize.daily_features --symbols AAPL.O MSFT.O --output ./output/features
 
 # 使用脚本
-./script/visualize.sh ./output/features
+./script/A. visualize features.sh ./output/features
 ```
 
 ### 2. 查看图表
@@ -37,7 +37,7 @@ python -m trader.visualize.daily_features --symbols AAPL.O MSFT.O --output ./out
 ## 命令行选项
 
 ```bash
-python -m trader.visualize.daily_features [选项]
+python -m trader.features.visualize.daily_features [选项]
 
 选项:
   --symbols SYMBOL1 SYMBOL2 ...  指定股票代码列表（可选，不指定则使用所有股票）
@@ -45,6 +45,7 @@ python -m trader.visualize.daily_features [选项]
   --figsize WIDTH HEIGHT          图表大小（默认: 14 7）
   --dpi DPI                       图表分辨率（默认: 150）
   --no-summary                    不打印特征汇总信息
+  --force                         强制重新计算，忽略缓存
 ```
 
 ## 使用示例
@@ -52,13 +53,13 @@ python -m trader.visualize.daily_features [选项]
 ### 示例 1: 生成所有特征的图表
 
 ```bash
-python -m trader.visualize.daily_features --output ./output/features
+python -m trader.features.visualize.daily_features --output ./output/features
 ```
 
 ### 示例 2: 只生成指定股票的特征
 
 ```bash
-python -m trader.visualize.daily_features \
+python -m trader.features.visualize.daily_features \
     --symbols AAPL.O MSFT.O GOOGL.O \
     --output ./output/selected_features
 ```
@@ -66,7 +67,7 @@ python -m trader.visualize.daily_features \
 ### 示例 3: 自定义图表大小和分辨率
 
 ```bash
-python -m trader.visualize.daily_features \
+python -m trader.features.visualize.daily_features \
     --output ./output/features \
     --figsize 16 8 \
     --dpi 200
@@ -112,8 +113,9 @@ python -m trader.cmd.build_features --list
 如果股票或特征数量很大，可以分批生成：
 ```bash
 # 先处理前几个股票
-python -m trader.visualize.daily_features --symbols AAPL.O MSFT.O --output ./output/batch1
+python -m trader.features.visualize.daily_features --symbols AAPL.O MSFT.O --output ./output/batch1
 
 # 再处理其他股票
-python -m trader.visualize.daily_features --symbols GOOGL.O TSLA.O --output ./output/batch2
+python -m trader.features.visualize.daily_features --symbols GOOGL.O TSLA.O --output ./output/batch2
 ```
+
