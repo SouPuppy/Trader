@@ -5,14 +5,14 @@ Dummy TradingAgent 示例实现
 """
 from typing import Dict, List, Optional
 from datetime import datetime
-from trader.agent.abstract_agent import AbstractAgent
+from trader.agent.TradingAgent import TradingAgent
 from trader.backtest.engine import BacktestEngine
 from trader.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-class DummyAgent(AbstractAgent):
+class DummyAgent(TradingAgent):
     """
     Dummy TradingAgent 示例
     使用简单的规则计算 score 和 weight

@@ -30,34 +30,32 @@ TradingAgent 模块区分了两个关键概念：
 ## 类层次结构
 
 ```
-TradingAgent (抽象基类)
-  ├── score() - 抽象方法：计算看好程度
-  ├── weight() - 抽象方法：计算配置比例
+TradingAgent (基类)
+  ├── score() - 抽象方法：计算看好程度（必须实现）
+  ├── weight() - 默认实现：计算配置比例（可以重写）
   ├── get_scores() - 批量计算 score
-  └── get_weights() - 批量计算 weight
-
-AbstractAgent (抽象实现)
-  ├── 继承自 TradingAgent
-  ├── 提供默认的 weight() 实现
-  ├── normalize_weights() - 权重归一化
-  └── filter_by_score() - 根据 score 筛选股票
+  ├── get_weights() - 批量计算 weight
+  ├── normalize_weights() - 权重归一化工具方法
+  └── filter_by_score() - 根据 score 筛选股票工具方法
 
 DummyAgent (示例实现)
-  └── 继承自 AbstractAgent
+  └── 继承自 TradingAgent
       └── 提供简单的 score() 实现示例
 ```
+
+注意：`AbstractAgent` 是 `TradingAgent` 的别名，用于向后兼容。
 
 ## 使用示例
 
 ### 1. 创建自定义 TradingAgent
 
 ```python
-from trader.agent import AbstractAgent
+from trader.agent import TradingAgent
 from trader.backtest.engine import BacktestEngine
 
-class MyAgent(AbstractAgent):
+class MyAgent(TradingAgent):
     def score(self, stock_code: str, engine: BacktestEngine) -> float:
-        """计算看好程度"""
+        """计算看好程度（必须实现）"""
         # 使用特征计算 score
         ret_1d = engine.get_feature("ret_1d", stock_code)
         ret_20d = engine.get_feature("ret_20d", stock_code)
@@ -67,7 +65,7 @@ class MyAgent(AbstractAgent):
         return max(-1.0, min(1.0, score))
     
     def weight(self, stock_code: str, score: float, engine: BacktestEngine) -> float:
-        """计算配置比例（可以重写以添加自定义风控逻辑）"""
+        """计算配置比例（可选重写，默认实现基于 score 和风险参数）"""
         base_weight = super().weight(stock_code, score, engine)
         
         # 添加自定义风控逻辑
@@ -124,8 +122,9 @@ def on_trading_day(engine: BacktestEngine, date: str):
    - Weight: 专注于工程和风控问题（如何配置资金）
 
 2. **可扩展性**:
-   - 继承 `AbstractAgent` 可以快速实现新 TradingAgent
+   - 继承 `TradingAgent` 可以快速实现新 TradingAgent
    - 只实现 `score()` 方法即可，`weight()` 有默认实现
+   - 可以重写 `weight()` 方法添加自定义风控逻辑
 
 3. **灵活性**:
    - 可以重写 `weight()` 方法添加自定义风控逻辑
