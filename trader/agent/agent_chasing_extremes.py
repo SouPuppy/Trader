@@ -102,9 +102,10 @@ class ChasingExtremesAgent(TradingAgent):
         """
         计算股票的 score（基于极端价格波动）
         
-        策略（稳定亏钱的疯狂策略）：
-        - 如果价格上涨（超过阈值），返回高分（追涨，买在高点）
-        - 如果价格下跌（超过阈值），返回负分（追跌，卖在低点）
+        策略（稳定亏钱的疯狂策略 - 反向操作）：
+        - 如果价格上涨（超过阈值），返回负分（卖出信号，在上涨时卖出）
+        - 如果价格下跌（超过阈值），返回正分（买入信号，在下跌时买入）
+        - 反向操作，让它总是在错误的时间交易，稳定亏钱
         - 即使波动很小也会触发，让它频繁交易亏钱
         
         Args:
@@ -113,8 +114,8 @@ class ChasingExtremesAgent(TradingAgent):
             
         Returns:
             float: score 值，范围 [-1, 1]
-                  - 正数表示追涨（买入信号）
-                  - 负数表示追跌（卖出信号）
+                  - 正数表示买入信号（在下跌时买入）
+                  - 负数表示卖出信号（在上涨时卖出）
                   - 绝对值越大表示波动越极端
         """
         try:
@@ -133,37 +134,33 @@ class ChasingExtremesAgent(TradingAgent):
             # 计算收益率
             ret = self._calculate_return(stock_code, date)
             if ret is None:
-                # 如果数据不足（第一天），返回一个正分，让它买入（这样更容易亏钱）
-                # 第一天就全仓买入，然后等待价格波动
+                # 如果数据不足（第一天），返回一个正分，让它买入
                 return 0.5 if self.chase_up else 0.0
             
             # 判断是否为极端波动
             abs_ret = abs(ret)
             
+            # 反向操作：价格上涨时卖出，价格下跌时买入（稳定亏钱）
             # 降低阈值要求，让它更容易触发
-            # 如果波动超过阈值，或者波动很小但方向明确，都触发
             if abs_ret < self.extreme_threshold:
                 # 即使波动不够极端，如果方向明确，也给予小的信号
-                # 这样可以让它更频繁地交易
                 if ret > 0 and self.chase_up and abs_ret > self.extreme_threshold * 0.5:
-                    # 小幅上涨也追涨（买在高点）
-                    return min(abs_ret / self.extreme_threshold, 0.5)
-                elif ret < 0 and self.chase_down and abs_ret > self.extreme_threshold * 0.5:
-                    # 小幅下跌也追跌（卖在低点）
+                    # 价格上涨时卖出（反向操作，稳定亏钱）
                     return -min(abs_ret / self.extreme_threshold, 0.5)
+                elif ret < 0 and self.chase_down and abs_ret > self.extreme_threshold * 0.5:
+                    # 价格下跌时买入（反向操作，稳定亏钱）
+                    return min(abs_ret / self.extreme_threshold, 0.5)
                 else:
                     return 0.0
             
-            # 极端波动：根据涨跌方向决定 score
+            # 极端波动：反向操作
             if ret > 0 and self.chase_up:
-                # 大涨：追涨，返回正分（买在高点）
-                # 将收益率映射到 [0, 1] 范围
-                normalized_score = min(abs_ret / (self.extreme_threshold * 2), 1.0)
+                # 大涨：反向操作，返回负分（在上涨时卖出，稳定亏钱）
+                normalized_score = -min(abs_ret / (self.extreme_threshold * 2), 1.0)
                 return normalized_score
             elif ret < 0 and self.chase_down:
-                # 大跌：追跌，返回负分（卖在低点）
-                # 将收益率映射到 [-1, 0] 范围
-                normalized_score = -min(abs_ret / (self.extreme_threshold * 2), 1.0)
+                # 大跌：反向操作，返回正分（在下跌时买入，稳定亏钱）
+                normalized_score = min(abs_ret / (self.extreme_threshold * 2), 1.0)
                 return normalized_score
             
             return 0.0

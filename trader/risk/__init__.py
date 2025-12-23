@@ -6,6 +6,7 @@ from trader.risk.RiskManager import RiskManager, RiskContext, RiskManagerPipelin
 from trader.risk.OrderIntent import OrderIntent, OrderSide, PriceType
 from trader.risk.control_leverage_limit import LeverageLimitRiskManager
 from trader.risk.control_uncertainty_gate import UncertaintyGateRiskManager
+from trader.risk.control_position_scaling import PositionScalingRiskManager
 
 __all__ = [
     'RiskManager',
@@ -16,5 +17,6 @@ __all__ = [
     'PriceType',
     'LeverageLimitRiskManager',
     'UncertaintyGateRiskManager',
+    'PositionScalingRiskManager',
 ]
 
