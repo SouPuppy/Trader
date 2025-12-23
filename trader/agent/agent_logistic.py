@@ -110,6 +110,7 @@ class LogisticAgent(TradingAgent):
         self.last_train_date: Optional[str] = None
         self.train_count = 0
         self.trading_day_count = 0
+        self._data_insufficient_warned: set = set()  # 记录已警告的数据不足情况，避免重复警告
         
         # 训练/测试分割比例（用于准备训练数据时的分割）
         # 注意：实际的训练/测试分割日期由 BacktestEngine 统一管理
@@ -235,12 +236,16 @@ class LogisticAgent(TradingAgent):
         # 至少需要 prediction_horizon + 一些样本（比如至少50个样本）才能训练
         min_samples_needed = self.prediction_horizon + 50  # 至少需要50个训练样本
         if len(price_data) < min_samples_needed:
-            logger.warning(
-                f"数据不足，无法训练: {stock_code}, "
-                f"需要至少 {min_samples_needed} 天（用于构建至少50个样本），"
-                f"实际 {len(price_data)} 天。"
-                f"请确保数据库中有足够的历史数据（至少到 {end_date} 之前 {min_samples_needed} 天）"
-            )
+            # 只在第一次尝试训练时记录警告，避免重复警告
+            warning_key = f"{stock_code}_{end_date}"
+            if warning_key not in self._data_insufficient_warned:
+                logger.debug(
+                    f"数据不足，无法训练: {stock_code}, "
+                    f"需要至少 {min_samples_needed} 天（用于构建至少50个样本），"
+                    f"实际 {len(price_data)} 天。"
+                    f"请确保数据库中有足够的历史数据（至少到 {end_date} 之前 {min_samples_needed} 天）"
+                )
+                self._data_insufficient_warned.add(warning_key)
             return None
         
         # 计算训练/测试分割点（70%/30%）
@@ -251,13 +256,17 @@ class LogisticAgent(TradingAgent):
         # 确保训练样本数至少为 min_samples_needed - prediction_horizon
         min_train_samples = max(50, min_samples_needed - self.prediction_horizon)
         if train_samples < min_train_samples:
-            logger.warning(
-                f"训练样本数不足: {stock_code}, "
-                f"需要至少 {min_train_samples} 个训练样本，"
-                f"实际 {train_samples} 个。"
-                f"数据总量: {len(price_data)} 天, "
-                f"训练集需要至少 {min_train_samples + self.prediction_horizon} 天"
-            )
+            # 只在第一次尝试训练时记录警告，避免重复警告
+            warning_key = f"{stock_code}_{end_date}_samples"
+            if warning_key not in self._data_insufficient_warned:
+                logger.debug(
+                    f"训练样本数不足: {stock_code}, "
+                    f"需要至少 {min_train_samples} 个训练样本，"
+                    f"实际 {train_samples} 个。"
+                    f"数据总量: {len(price_data)} 天, "
+                    f"训练集需要至少 {min_train_samples + self.prediction_horizon} 天"
+                )
+                self._data_insufficient_warned.add(warning_key)
             return None
         
         # 注意：训练/测试分割日期由 BacktestEngine 统一管理，这里不再设置
@@ -314,12 +323,16 @@ class LogisticAgent(TradingAgent):
         # 检查实际构建的样本数是否满足最小要求
         min_train_samples = max(50, min_samples_needed - self.prediction_horizon)
         if len(X_list) < min_train_samples:
-            logger.warning(
-                f"实际构建的训练样本数不足: {stock_code}, "
-                f"需要至少 {min_train_samples} 个训练样本，"
-                f"实际构建了 {len(X_list)} 个（理论计算 {train_samples} 个）。"
-                f"可能是由于特征缺失导致部分样本被跳过"
-            )
+            # 只在第一次尝试训练时记录警告，避免重复警告
+            warning_key = f"{stock_code}_{end_date}_built"
+            if warning_key not in self._data_insufficient_warned:
+                logger.debug(
+                    f"实际构建的训练样本数不足: {stock_code}, "
+                    f"需要至少 {min_train_samples} 个训练样本，"
+                    f"实际构建了 {len(X_list)} 个（理论计算 {train_samples} 个）。"
+                    f"可能是由于特征缺失导致部分样本被跳过"
+                )
+                self._data_insufficient_warned.add(warning_key)
             return None
         
         X = np.array(X_list)
@@ -346,7 +359,7 @@ class LogisticAgent(TradingAgent):
         # 准备训练数据
         training_data = self._prepare_training_data(stock_code, end_date, engine)
         if training_data is None:
-            logger.warning(f"无法准备训练数据，跳过训练: {stock_code}")
+            # 数据不足的情况已经在 _prepare_training_data 中记录，这里不需要重复记录
             return
         
         X, y = training_data
@@ -384,22 +397,46 @@ class LogisticAgent(TradingAgent):
         self.last_train_date = end_date
         self.train_count += 1
     
-    def _should_retrain(self, current_date: str) -> bool:
+    def _has_sufficient_data(self, stock_code: str, end_date: str) -> bool:
+        """
+        快速检查是否有足够的数据进行训练
+        
+        Args:
+            stock_code: 股票代码
+            end_date: 结束日期
+            
+        Returns:
+            是否有足够的数据
+        """
+        min_samples_needed = self.prediction_horizon + 50
+        price_data = self._load_historical_data(stock_code, end_date, min_samples_needed)
+        return len(price_data) >= min_samples_needed
+    
+    def _should_retrain(self, current_date: str, stock_code: str = None) -> bool:
         """
         判断是否需要重新训练
         
         Args:
             current_date: 当前日期
+            stock_code: 股票代码（可选，用于检查数据是否足够）
             
         Returns:
             是否需要重新训练
         """
-        # 如果从未训练过，需要训练
+        # 如果从未训练过，需要先检查数据是否足够
         if not self.is_trained or self.model is None:
+            # 如果提供了股票代码，先检查数据是否足够
+            if stock_code:
+                if not self._has_sufficient_data(stock_code, current_date):
+                    return False  # 数据不足，不尝试训练
             return True
         
         # 如果达到重新训练频率，需要训练
         if self.trading_day_count % self.retrain_frequency == 0:
+            # 如果提供了股票代码，先检查数据是否足够
+            if stock_code:
+                if not self._has_sufficient_data(stock_code, current_date):
+                    return False  # 数据不足，不尝试训练
             return True
         
         return False
@@ -421,7 +458,7 @@ class LogisticAgent(TradingAgent):
         is_in_test_period = engine.is_in_test_period()
         
         # 检查是否需要重新训练（只在训练期重新训练）
-        if not is_in_test_period and self._should_retrain(engine.current_date):
+        if not is_in_test_period and self._should_retrain(engine.current_date, stock_code):
             self._train_model(stock_code, engine.current_date, engine)
         
         # 如果模型未训练成功，返回 0

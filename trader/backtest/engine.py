@@ -395,6 +395,9 @@ class BacktestEngine:
         """
         检查日期访问权限（日期保护）
         
+        注意：允许访问训练期的历史数据（只要不超过当前日期）。
+        这样可以确保在测试期开始时，可以使用训练期的数据来计算滑动窗口特征。
+        
         Args:
             date: 要访问的日期，如果为 None 则使用当前日期
             
@@ -410,6 +413,7 @@ class BacktestEngine:
         access_date = date or self.current_date
         
         # 检查是否尝试访问未来数据
+        # 注意：允许访问训练期的历史数据（只要不超过当前日期）
         if access_date > self.current_date:
             raise ValueError(
                 f"不允许访问未来数据: 当前日期={self.current_date}, "
@@ -423,18 +427,24 @@ class BacktestEngine:
         """
         获取股票价格数据（带日期保护）
         
+        注意：在测试期，可以访问训练期的历史数据用于计算滑动窗口特征。
+        这样可以避免在测试期开始时因为数据不足而无法计算特征。
+        
         Args:
             stock_code: 股票代码
             date: 日期（格式: YYYY-MM-DD），如果为 None 则使用当前日期
-            lookback: 回看窗口大小（需要多少天的历史数据）
+            lookback: 回看窗口大小（需要多少天的历史数据，已废弃，保留用于兼容性）
             
         Returns:
-            pd.DataFrame: 价格数据
+            pd.DataFrame: 价格数据，包含从最早可用日期到指定日期的所有数据
+                         （包括训练期的数据，如果当前在测试期）
             
         Raises:
             ValueError: 如果尝试访问未来数据
         """
         access_date = self._check_date_access(date)
+        # 获取所有到 access_date 的数据（包括训练期的数据）
+        # 这样在测试期开始时，可以使用训练期的数据来计算滑动窗口特征
         return self.market.get_price_data(stock_code, end_date=access_date)
     
     def get_price(self, stock_code: str, date: Optional[str] = None) -> Optional[float]:
@@ -530,6 +540,8 @@ class BacktestEngine:
             raise ValueError(f"特征不存在: {feature_name}")
         
         # 加载所需的历史数据
+        # 注意：在测试期，这会包含训练期的数据，可以用于计算滑动窗口特征
+        # 例如：如果当前是测试期的第一天，但需要20日均线，可以使用训练期的数据
         df = self.market.get_price_data(stock_code, end_date=access_date)
         if df.empty:
             return None

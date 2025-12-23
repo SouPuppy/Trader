@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 def multi_asset_strategy(
     stock_codes: Optional[List[str]] = None,
     initial_cash: float = 1000000.0,
-    max_position_weight: float = 0.2,  # 单个股票最大20%
+    max_position_weight: float = 0.4,  # 单个股票最大40%（增加投资力度，方便风险控制）
     min_score_threshold: float = 0.0,
     max_total_weight: float = 1.0,  # 总仓位上限100%
     train_window_days: int = 252,
@@ -199,7 +199,7 @@ if __name__ == "__main__":
     multi_asset_strategy(
         stock_codes=["AAPL.O", "AMZN.O", "ASML.O", "META.O", "MRNA.O"],
         initial_cash=1000000.0,
-        max_position_weight=0.2,  # 单个股票最大20%
+        max_position_weight=0.5,  # 单个股票最大50%（增加投资力度，方便风险控制）
         min_score_threshold=0.0,
         max_total_weight=1.0,  # 总仓位上限100%
         train_window_days=252,

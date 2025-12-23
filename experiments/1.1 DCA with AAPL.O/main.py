@@ -1,138 +1,119 @@
 """
-DCA (Dollar Cost Averaging) 定投策略回测示例
-使用 DCAAgent 实现定投策略
+DCA (Dollar Cost Averaging) backtest
+Single-asset monthly investment strategy using DCAAgent
 """
+
 import sys
 from pathlib import Path
 
-# 添加项目根目录到 Python 路径
-project_root = Path(__file__).parent.parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+# Ensure project root is on PYTHONPATH
+project_root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(project_root))
 
 from trader.agent.agent_dca import DCAAgent
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
-from trader.logger import get_logger, log_separator, log_section
+from trader.logger import get_logger, log_section, log_separator
 
 logger = get_logger(__name__)
 
 
-def dca_strategy(
+def run_dca_backtest(
     stock_code: str = "AAPL.O",
-    initial_cash: float = 1000000.0,
-    monthly_investment: float = 100000.0,
-    start_date: str = None,
-    end_date: str = None
+    initial_cash: float = 1_000_000.0,
+    monthly_investment: float = 100_000.0,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
-    """
-    定投策略回测（使用 DCAAgent）
-    
-    Args:
-        stock_code: 股票代码
-        initial_cash: 初始资金（元）
-        monthly_investment: 每月定投金额（元）
-        start_date: 开始日期（格式: YYYY-MM-DD），如果为 None 则从最早可用日期开始
-        end_date: 结束日期（格式: YYYY-MM-DD），如果为 None 则到最新日期
-    """
-    for line in log_section("DCA 定投策略回测（使用 Agent）"):
+    """Run a DCA backtest for a single asset."""
+
+    for line in log_section("DCA Strategy Backtest"):
         logger.info(line)
-    logger.info(f"股票代码: {stock_code}")
-    logger.info(f"初始资金: {initial_cash:,.2f} 元")
-    logger.info(f"每月定投: {monthly_investment:,.2f} 元")
-    
-    # 初始化市场、账户和回测引擎
+
+    logger.info(f"Symbol: {stock_code}")
+    logger.info(f"Initial cash: {initial_cash:,.2f}")
+    logger.info(f"Monthly investment: {monthly_investment:,.2f}")
+
     market = Market(price_adjustment=0.01)
     account = Account(initial_cash=initial_cash)
-    
-    # 生成报告标题（包含策略名称和参数，使用英文）
-    report_title = f"DCA_Strategy_{stock_code}_monthly{int(monthly_investment)}"
+
+    report_title = f"DCA_{stock_code}_monthly{int(monthly_investment)}"
     engine = BacktestEngine(account, market, report_title=report_title)
-    
-    # 获取可用日期（用于显示数据范围）
+
     available_dates = market.get_available_dates(stock_code)
     if not available_dates:
-        logger.error(f"未找到股票 {stock_code} 的数据")
+        logger.error(f"No market data for {stock_code}")
         return
-    
-    logger.info(f"数据范围: {available_dates[0]} 至 {available_dates[-1]}")
-    
-    # 创建 DCA Agent
+
+    logger.info(f"Data range: {available_dates[0]} → {available_dates[-1]}")
+
     agent = DCAAgent(
-        name="DCA_Strategy",
+        name="DCA",
         monthly_investment=monthly_investment,
-        dca_frequency="monthly"
+        dca_frequency="monthly",
     )
-    
-    # 设置定投的股票代码
     agent.set_dca_stocks([stock_code])
-    
-    # 注册交易日回调：调用 agent 的 on_date 方法执行定投
-    def on_trading_day(eng: BacktestEngine, date: str):
-        """每个交易日的回调"""
-        agent.on_date(eng, date)
-    
+
+    def on_trading_day(engine: BacktestEngine, date: str):
+        agent.on_date(engine, date)
+
     engine.on_date(on_trading_day)
-    
-    # 运行回测
-    logger.info("")
-    logger.info("开始回测...")
+
+    logger.info("Running backtest...")
     engine.run(stock_code, start_date=start_date, end_date=end_date)
+
+    # 使用回测引擎实际运行的最后一个日期，或者最后一个可用日期
+    # 如果 end_date 不在可用日期范围内，使用最后一个可用日期
+    if end_date and end_date in available_dates:
+        final_date = end_date
+    else:
+        # 使用回测引擎的最后一个交易日，或者可用日期的最后一个
+        final_date = engine.current_date if engine.current_date else available_dates[-1]
     
-    # 计算最终结果
-    final_price = market.get_price(stock_code, end_date if end_date else available_dates[-1])
+    final_price = market.get_price(stock_code, final_date)
     if final_price is None:
-        final_price = market.get_price(stock_code)  # 使用最新价格
-    
-    if final_price is None:
-        logger.error("无法获取最终价格")
+        logger.error(f"Final price unavailable for date: {final_date}")
+        logger.info(f"Available dates range: {available_dates[0]} → {available_dates[-1]}")
         return
-    
+
     market_prices = {stock_code: final_price}
     equity = account.equity(market_prices)
     profit = account.get_total_profit(market_prices)
     return_pct = account.get_total_return(market_prices)
-    
-    # 计算实际总投入（初始资金 - 剩余现金）
-    total_invested = initial_cash - account.cash
-    
-    # 输出结果
-    logger.info("")
-    for line in log_section("回测结果"):
+    invested = initial_cash - account.cash
+
+    for line in log_section("Backtest Result"):
         logger.info(line)
-    logger.info(f"定投次数: {agent.investment_count}")
-    logger.info(f"初始资金: {initial_cash:,.2f} 元")
-    logger.info(f"实际投入: {total_invested:,.2f} 元")
-    logger.info(f"当前现金: {account.cash:,.2f} 元")
-    
+
+    logger.info(f"DCA executions: {agent.investment_count}")
+    logger.info(f"Capital invested: {invested:,.2f}")
+    logger.info(f"Remaining cash: {account.cash:,.2f}")
+
     position = account.get_position(stock_code)
     if position:
-        position_value = position["shares"] * final_price
-        position_profit = (final_price - position["average_price"]) * position["shares"]
-        logger.info(f"持仓股数: {position['shares']} 股")
-        logger.info(f"平均成本: {position['average_price']:.2f} 元")
-        logger.info(f"当前价格: {final_price:.2f} 元")
-        logger.info(f"持仓市值: {position_value:,.2f} 元")
-        logger.info(f"持仓盈亏: {position_profit:+,.2f} 元")
-    
-    logger.info(f"总权益: {equity:,.2f} 元")
-    logger.info(f"总盈亏: {profit:+,.2f} 元")
-    logger.info(f"总收益率: {return_pct:+.2f}%")
+        shares = position["shares"]
+        avg_price = position["average_price"]
+        value = shares * final_price
+        pnl = (final_price - avg_price) * shares
+
+        logger.info(f"Position: {shares} shares")
+        logger.info(f"Avg cost: {avg_price:.2f}")
+        logger.info(f"Market price: {final_price:.2f}")
+        logger.info(f"Market value: {value:,.2f}")
+        logger.info(f"Unrealized PnL: {pnl:+,.2f}")
+
+    logger.info(f"Total equity: {equity:,.2f}")
+    logger.info(f"Total PnL: {profit:+,.2f}")
+    logger.info(f"Return: {return_pct:+.2f}%")
     logger.info(log_separator())
-    
-    # 输出详细账户摘要
-    logger.info("")
+
     logger.info(account.summary(market_prices))
 
 
 if __name__ == "__main__":
-    # 执行定投策略
-    dca_strategy(
+    run_dca_backtest(
         stock_code="AAPL.O",
-        initial_cash=1000000.0,
-        monthly_investment=100000.0,
-        start_date=None,  # 从最早日期开始
-        end_date=None     # 到最新日期
+        start_date="2023-01-01",
+        end_date="2023-12-31",
     )
-
