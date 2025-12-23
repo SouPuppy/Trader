@@ -229,3 +229,50 @@ class PositionLimitRiskManager(RiskManager):
 2. 订单调整：adjust() 返回的订单应保持原始订单的基本信息
 3. 组合层面调整：pre_trade() 可同时调整多个订单，用于组合层面的风险控制
 4. 交易后记录：post_trade() 用于记录风控状态，不影响当前交易但影响后续交易
+
+# Evaluation-Driven Uncertainty-Gated Risk Control
+
+本模块在现有 RiskManager 管道之上，引入 **基于大语言模型不确定性评估的风险控制机制**，用于在交易执行前动态抑制不可靠或高不确定性的交易信号。
+
+该机制不依赖模型参数微调，而是通过 **LLM 输出层面的不确定性估计**，实现一种 evaluation-driven feedback control loop，使交易系统在模型信心不足时自动趋于保守。
+
+---
+
+## 设计动机
+
+传统风险控制（如杠杆限制、持仓上限）仅关注 **账户与市场状态**，而忽略了：
+
+> **交易信号本身的可靠性与不确定性**
+
+在基于大语言模型（LLM）的交易系统中，模型输出天然具有随机性与语义模糊性，因此有必要将 **LLM 不确定性显式纳入风险管理决策**。
+
+---
+
+## 核心思想
+
+**当 LLM 对自身判断越不确定，系统应当越保守。**
+
+该模块将 LLM 的不确定性视为一种 **风险信号**，并通过风险门控（gate）的方式影响交易执行：
+
+- 不确定性低 → 正常执行
+- 不确定性中 → 降低仓位
+- 不确定性高 → 拒绝交易
+
+---
+
+## 工作流程概览
+
+```mermaid
+flowchart TD
+    A[Market Data / News] --> B[LLM Trading Agent]
+    B --> C[OrderIntent<br/>sentiment / weight / confidence]
+    C --> D[Uncertainty Evaluation]
+    D --> E{Uncertainty Gate}
+    E -- Low --> F[Approve Order]
+    E -- Medium --> G[Scale Down Position]
+    E -- High --> H[Reject / Skip Trade]
+    F --> I[RiskManager Pipeline]
+    G --> I
+    H --> I
+    I --> J[Execution Engine]
+```
