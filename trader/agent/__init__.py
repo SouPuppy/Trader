@@ -5,8 +5,6 @@ TradingAgent 模块
 from trader.agent.TradingAgent import TradingAgent
 from trader.agent.agent_dca import DCAAgent
 from trader.agent.agent_turtle import TurtleAgent
-from trader.agent.agent_dummy import DummyAgent
-from trader.agent.agent_dummy_with_simple_risk_control import DummyAgentWithSimpleRiskControl
 from trader.agent.agent_logistic import LogisticAgent
 from trader.agent.MultiAssetTradingAgent import MultiAssetTradingAgent
 from trader.agent.multiagent_weight_normalized import normalize_weights, combine_agent_weights
@@ -19,8 +17,6 @@ __all__ = [
     'AbstractAgent', 
     'DCAAgent', 
     'TurtleAgent',
-    'DummyAgent',
-    'DummyAgentWithSimpleRiskControl',
     'LogisticAgent',
     'MultiAssetTradingAgent',
     'normalize_weights',

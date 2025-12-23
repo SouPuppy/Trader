@@ -38,12 +38,48 @@ TradingAgent (基类)
   ├── normalize_weights() - 权重归一化工具方法
   └── filter_by_score() - 根据 score 筛选股票工具方法
 
-DummyAgent (示例实现)
-  └── 继承自 TradingAgent
-      └── 提供简单的 score() 实现示例
+具体实现：
+  ├── DCAAgent - 定投策略
+  ├── TurtleAgent - 海龟交易策略
+  ├── LogisticAgent - 逻辑回归预测策略
+  └── MultiAssetTradingAgent - 多资产交易策略
 ```
 
 注意：`AbstractAgent` 是 `TradingAgent` 的别名，用于向后兼容。
+
+## MultiAgent 架构
+
+`MultiAssetTradingAgent` 使用多个独立的 `LogisticAgent` 分别处理不同股票，然后通过权重归一化统一管理：
+
+```mermaid
+graph LR
+    A[MultiAssetTradingAgent] --> B[normalize_weights]
+    
+    A --> C1[TradingAgent<br/>LogisticAgent 1]
+    A --> C2[TradingAgent<br/>LogisticAgent 2]
+    A --> C3[TradingAgent<br/>LogisticAgent 3]
+    
+    C1 --> D1[AAPL.O]
+    C2 --> D2[TSLA.O]
+    C3 --> D3[META.O]
+    
+    C1 --> B
+    C2 --> B
+    C3 --> B
+    
+    B --> E[Normalized Weights]
+    
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style E fill:#e8f5e9
+```
+
+**工作流程**：
+1. `MultiAssetTradingAgent` 为每支股票创建独立的 `LogisticAgent`（继承自 `TradingAgent`）
+2. 每个 `LogisticAgent` 独立计算对应股票的 score 和 weight
+3. 收集所有 `LogisticAgent` 的权重
+4. 通过 `normalize_weights()` 进行归一化，确保总权重不超过 `max_total_weight`
+5. 返回归一化后的权重用于实际交易
 
 ## 使用示例
 
@@ -77,12 +113,22 @@ class MyAgent(TradingAgent):
 ### 2. 在回测中使用 TradingAgent
 
 ```python
-from trader.agent import DummyAgent
+from trader.agent import TradingAgent
 from trader.backtest.engine import BacktestEngine
+
+class MyAgent(TradingAgent):
+    def score(self, stock_code: str, engine: BacktestEngine) -> float:
+        """计算看好程度"""
+        ret_1d = engine.get_feature("ret_1d", stock_code)
+        ret_20d = engine.get_feature("ret_20d", stock_code)
+        if ret_1d is None or ret_20d is None:
+            return 0.0
+        score = (ret_1d * 0.3 + ret_20d * 0.7)
+        return max(-1.0, min(1.0, score))
 
 def on_trading_day(engine: BacktestEngine, date: str):
     # 创建 TradingAgent
-    agent = DummyAgent(
+    agent = MyAgent(
         max_position_weight=0.1,  # 单个股票最多10%
         min_score_threshold=0.0,  # score >= 0 才配置
         max_total_weight=0.8      # 总配置不超过80%
