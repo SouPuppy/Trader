@@ -1,6 +1,6 @@
 """
-多资产交易策略示例
-使用 MultiAssetTradingAgent 对指定股票池中的股票分别使用独立的 LogisticAgent 获取信号
+多资产交易策略示例（使用 LogisticAgent）
+使用 MultiAssetLogisticAgent 对指定股票池中的股票分别使用独立的 LogisticAgent 获取信号
 然后使用 multiagent_weight_normalized 进行权重归一化
 """
 import sys
@@ -12,7 +12,7 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from trader.agent.MultiAssetTradingAgent import MultiAssetTradingAgent
+from trader.agent.MultiAssetTradingAgent import MultiAssetLogisticAgent
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
@@ -25,7 +25,7 @@ def multi_asset_strategy(
     stock_codes: Optional[List[str]] = None,
     initial_cash: float = 1000000.0,
     max_position_weight: float = 0.4,  # 单个股票最大40%（增加投资力度，方便风险控制）
-    min_score_threshold: float = 0.0,
+    min_score_threshold: float = 0.1,  # 提高阈值，只配置真正看好的股票（从0.0提高到0.1）
     max_total_weight: float = 1.0,  # 总仓位上限100%
     train_window_days: int = 252,
     prediction_horizon: int = 5,
@@ -33,7 +33,10 @@ def multi_asset_strategy(
     retrain_frequency: int = 20,
     train_test_split_ratio: float = 0.7,
     start_date: str = None,
-    end_date: str = None
+    end_date: str = None,
+    # 新增：交易频率控制参数
+    min_trade_amount: float = 5000.0,  # 最小交易金额阈值（从100元提高到5000元）
+    min_weight_change: float = 0.05,  # 最小权重变化阈值（5%），避免微小调整
 ):
     """
     多资产交易策略回测
@@ -52,7 +55,7 @@ def multi_asset_strategy(
         start_date: 开始日期
         end_date: 结束日期
     """
-    for line in log_section("多资产交易策略回测"):
+    for line in log_section("多资产交易策略回测（Logistic）"):
         logger.info(line)
     
     # 初始化市场、账户和回测引擎
@@ -80,6 +83,9 @@ def multi_asset_strategy(
     logger.info(f"初始资金: {initial_cash:,.2f} 元")
     logger.info(f"单股最大仓位: {max_position_weight*100:.0f}%")
     logger.info(f"总仓位上限: {max_total_weight*100:.0f}%")
+    logger.info(f"最小 score 阈值: {min_score_threshold:.2f}")
+    logger.info(f"最小交易金额: {min_trade_amount:,.0f} 元")
+    logger.info(f"最小权重变化阈值: {min_weight_change*100:.0f}%")
     
     # 生成报告标题
     report_title = (
@@ -92,8 +98,8 @@ def multi_asset_strategy(
         train_test_split_ratio=train_test_split_ratio
     )
     
-    # 创建多资产交易代理
-    agent = MultiAssetTradingAgent(
+    # 创建多资产交易代理（使用 LogisticAgent，启用并行计算）
+    agent = MultiAssetLogisticAgent(
         stock_codes=valid_stock_codes,
         name="MultiAsset_Logistic",
         max_position_weight=max_position_weight,
@@ -103,12 +109,27 @@ def multi_asset_strategy(
         prediction_horizon=prediction_horizon,
         ret_threshold=ret_threshold,
         retrain_frequency=retrain_frequency,
-        train_test_split_ratio=train_test_split_ratio
+        train_test_split_ratio=train_test_split_ratio,
+        use_parallel=False,  # 禁用并行计算（并行反而变慢，见下方说明）
+        max_workers=None  # 自动设置线程数（股票数量或 CPU 核心数，取较小值）
     )
+    
+    # 记录上一日的权重，用于计算权重变化
+    last_weights = {}
     
     # 注册交易日回调：执行策略
     def on_trading_day(eng: BacktestEngine, date: str):
         """每个交易日的回调"""
+        nonlocal last_weights  # 允许修改外部变量
+        
+        # 检查所有股票是否都有价格数据（避免非交易日或数据缺失）
+        market_prices = eng.get_market_prices(valid_stock_codes)
+        if len(market_prices) < len(valid_stock_codes):
+            # 有股票缺少价格数据，跳过该日期
+            missing_stocks = [code for code in valid_stock_codes if code not in market_prices]
+            logger.debug(f"[{date}] 跳过：以下股票缺少价格数据: {missing_stocks}")
+            return
+        
         # 更新 agent 状态
         agent.on_date(eng, date)
         
@@ -116,15 +137,21 @@ def multi_asset_strategy(
         weights = agent.get_all_weights(eng)
         
         # 获取账户权益
-        market_prices = eng.get_market_prices(valid_stock_codes)
         account_equity = account.equity(market_prices)
         
         # 对每支股票执行交易
         for stock_code in valid_stock_codes:
-            weight = weights.get(stock_code, 0.0)
+            new_weight = weights.get(stock_code, 0.0)
+            old_weight = last_weights.get(stock_code, 0.0)
+            
+            # 检查权重变化是否足够大（避免频繁微调）
+            weight_change = abs(new_weight - old_weight)
+            if weight_change < min_weight_change:
+                # 权重变化太小，跳过交易
+                continue
             
             # 计算目标持仓金额
-            target_value = account_equity * weight
+            target_value = account_equity * new_weight
             
             # 获取当前持仓
             position = account.get_position(stock_code)
@@ -136,8 +163,8 @@ def multi_asset_strategy(
             # 计算需要调整的金额
             diff_value = target_value - current_value
             
-            # 执行交易（最小交易金额阈值：100元）
-            if abs(diff_value) > 100:
+            # 执行交易（提高最小交易金额阈值，减少频繁交易）
+            if abs(diff_value) > min_trade_amount:
                 if diff_value > 0:
                     # 买入
                     eng.buy(stock_code, amount=diff_value)
@@ -148,6 +175,9 @@ def multi_asset_strategy(
                         shares_to_sell = min(shares_to_sell, position['shares'])
                         if shares_to_sell > 0:
                             eng.sell(stock_code, shares=shares_to_sell)
+        
+        # 更新上一日的权重
+        last_weights = weights.copy()
     
     engine.on_date(on_trading_day)
     
@@ -194,13 +224,13 @@ def multi_asset_strategy(
 
 
 if __name__ == "__main__":
-    # 执行多资产交易策略
+    # 执行多资产交易策略（优化版）
     # 默认使用指定的5支股票：AAPL.O, AMZN.O, ASML.O, META.O, MRNA.O
     multi_asset_strategy(
         stock_codes=["AAPL.O", "AMZN.O", "ASML.O", "META.O", "MRNA.O"],
         initial_cash=1000000.0,
-        max_position_weight=0.5,  # 单个股票最大50%（增加投资力度，方便风险控制）
-        min_score_threshold=0.0,
+        max_position_weight=0.4,  # 单个股票最大40%（降低单股风险）
+        min_score_threshold=0.15,  # 提高阈值到0.15，只配置真正看好的股票
         max_total_weight=1.0,  # 总仓位上限100%
         train_window_days=252,
         prediction_horizon=5,
@@ -208,6 +238,9 @@ if __name__ == "__main__":
         retrain_frequency=20,
         train_test_split_ratio=0.7,
         start_date=None,
-        end_date=None
+        end_date=None,
+        # 优化参数：减少频繁交易
+        min_trade_amount=5000.0,  # 最小交易金额5000元（从100元大幅提高）
+        min_weight_change=0.05,  # 权重变化至少5%才交易（避免微小调整）
     )
 

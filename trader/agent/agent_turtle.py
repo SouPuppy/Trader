@@ -347,8 +347,17 @@ class TurtleAgent(TradingAgent):
             if current_price is None or current_price == 0:
                 return 0.0
             
-            # 获取账户权益
-            account_equity = engine.account.equity(engine.get_market_prices([stock_code]))
+            # 获取账户权益（需要所有持仓股票的价格）
+            # 获取所有持仓股票代码
+            all_positions = list(engine.account.positions.keys())
+            if all_positions:
+                # 获取所有持仓股票的价格
+                market_prices = engine.get_market_prices(all_positions)
+            else:
+                # 如果没有持仓，只获取当前股票的价格
+                market_prices = engine.get_market_prices([stock_code])
+            
+            account_equity = engine.account.equity(market_prices)
             if account_equity <= 0:
                 return 0.0
             
@@ -520,7 +529,11 @@ class TurtleAgent(TradingAgent):
             normalized_weights = self.normalize_weights(weights)
             
             # 根据 weight 执行买入
-            account_equity = engine.account.equity(engine.get_market_prices(self._trading_stocks))
+            # 获取所有持仓股票的价格（包括当前交易的股票）
+            all_positions = list(account.positions.keys())
+            all_stocks = list(set(all_positions + self._trading_stocks))
+            market_prices = engine.get_market_prices(all_stocks)
+            account_equity = engine.account.equity(market_prices)
             
             for stock_code, weight in normalized_weights.items():
                 if weight > 0:

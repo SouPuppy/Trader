@@ -1,12 +1,12 @@
 """
-多资产交易代理（使用 LogisticAgent）
-对多个股票分别使用独立的 LogisticAgent 获取信号，然后进行权重归一化
+多资产交易代理（使用 TurtleAgent）
+对多个股票分别使用独立的 TurtleAgent 获取信号，然后进行权重归一化
 支持并行计算以提升性能
 """
 from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from trader.agent.TradingAgent import TradingAgent
-from trader.agent.agent_logistic import LogisticAgent
+from trader.agent.agent_turtle import TurtleAgent
 from trader.agent.multiagent_weight_normalized import normalize_weights
 from trader.backtest.engine import BacktestEngine
 from trader.logger import get_logger
@@ -15,32 +15,33 @@ import os
 logger = get_logger(__name__)
 
 
-class MultiAssetLogisticAgent(TradingAgent):
+class MultiAssetTurtleAgent(TradingAgent):
     """
-    多资产交易代理（使用 LogisticAgent）
-    对每支股票使用独立的 LogisticAgent 获取信号，然后进行权重归一化
+    多资产交易代理（使用 TurtleAgent）
+    对每支股票使用独立的 TurtleAgent 获取信号，然后进行权重归一化
     """
     
     def __init__(
         self,
         stock_codes: List[str],
-        name: str = "MultiAssetLogisticAgent",
+        name: str = "MultiAssetTurtleAgent",
         max_position_weight: float = 0.2,
         min_score_threshold: float = 0.0,
         max_total_weight: float = 1.0,
-        # LogisticAgent 参数
-        feature_names: Optional[List[str]] = None,
-        train_window_days: int = 252,
-        prediction_horizon: int = 5,
-        ret_threshold: float = 0.0,
-        retrain_frequency: int = 20,
-        train_test_split_ratio: float = 0.7,
+        # TurtleAgent 参数
+        entry_period: int = 20,
+        exit_period: int = 10,
+        atr_period: int = 20,
+        risk_per_trade: float = 0.02,
+        stop_loss_atr: float = 2.0,
+        max_positions: int = 4,
+        add_position_atr: float = 0.5,
         # 并行计算参数
-        use_parallel: bool = False,  # 是否使用并行计算（默认禁用，因为可能变慢）
-        max_workers: Optional[int] = None  # 最大工作线程数，None 表示自动
+        use_parallel: bool = False,
+        max_workers: Optional[int] = None
     ):
         """
-        初始化多资产交易代理
+        初始化多资产交易代理（使用 TurtleAgent）
         
         Args:
             stock_codes: 股票代码列表
@@ -48,14 +49,15 @@ class MultiAssetLogisticAgent(TradingAgent):
             max_position_weight: 单个股票最大配置比例
             min_score_threshold: 最小 score 阈值
             max_total_weight: 总配置比例上限
-            feature_names: LogisticAgent 使用的特征名称列表
-            train_window_days: LogisticAgent 训练窗口大小
-            prediction_horizon: LogisticAgent 预测周期
-            ret_threshold: LogisticAgent 收益阈值
-            retrain_frequency: LogisticAgent 重新训练频率
-            train_test_split_ratio: LogisticAgent 训练/测试分割比例
+            entry_period: TurtleAgent 突破周期
+            exit_period: TurtleAgent 退出周期
+            atr_period: TurtleAgent ATR计算周期
+            risk_per_trade: TurtleAgent 每次交易风险
+            stop_loss_atr: TurtleAgent 止损距离（ATR倍数）
+            max_positions: TurtleAgent 最大加仓次数
+            add_position_atr: TurtleAgent 加仓距离（ATR倍数）
             use_parallel: 是否使用并行计算
-            max_workers: 最大工作线程数，None 表示自动（默认为股票数量）
+            max_workers: 最大工作线程数，None 表示自动
         """
         super().__init__(
             name=name,
@@ -69,37 +71,36 @@ class MultiAssetLogisticAgent(TradingAgent):
         
         # 设置并行计算的线程数
         if max_workers is None:
-            # 默认使用股票数量，但不超过 CPU 核心数
             cpu_count = os.cpu_count() or 4
             self.max_workers = min(len(stock_codes), cpu_count)
         else:
             self.max_workers = max_workers
         
-        # 为每支股票创建独立的 LogisticAgent
-        self.agents: Dict[str, LogisticAgent] = {}
+        # 为每支股票创建独立的 TurtleAgent
+        self.agents: Dict[str, TurtleAgent] = {}
         for stock_code in stock_codes:
-            self.agents[stock_code] = LogisticAgent(
+            self.agents[stock_code] = TurtleAgent(
                 name=f"{name}_{stock_code}",
-                feature_names=feature_names,
-                train_window_days=train_window_days,
-                prediction_horizon=prediction_horizon,
-                ret_threshold=ret_threshold,
-                retrain_frequency=retrain_frequency,
-                max_position_weight=max_position_weight,
-                min_score_threshold=min_score_threshold,
-                max_total_weight=max_total_weight,
-                train_test_split_ratio=train_test_split_ratio
+                entry_period=entry_period,
+                exit_period=exit_period,
+                atr_period=atr_period,
+                risk_per_trade=risk_per_trade,
+                stop_loss_atr=stop_loss_atr,
+                max_positions=max_positions,
+                add_position_atr=add_position_atr
             )
+            # 设置交易股票列表
+            self.agents[stock_code].set_trading_stocks([stock_code])
         
         parallel_info = f", 并行计算: {self.max_workers} 线程" if use_parallel else ", 顺序计算"
         logger.info(
-            f"创建 MultiAssetLogisticAgent: {len(stock_codes)} 支股票, "
-            f"每支股票使用独立的 LogisticAgent{parallel_info}"
+            f"创建 MultiAssetTurtleAgent: {len(stock_codes)} 支股票, "
+            f"每支股票使用独立的 TurtleAgent{parallel_info}"
         )
     
     def score(self, stock_code: str, engine: BacktestEngine) -> float:
         """
-        计算股票的 score（使用该股票对应的 LogisticAgent）
+        计算股票的 score（使用该股票对应的 TurtleAgent）
         
         Args:
             stock_code: 股票代码
@@ -126,7 +127,6 @@ class MultiAssetLogisticAgent(TradingAgent):
             Dict[str, float]: {stock_code: score} 分数字典
         """
         if not self.use_parallel or len(self.stock_codes) <= 1:
-            # 顺序计算（单股票或禁用并行）
             scores = {}
             for stock_code in self.stock_codes:
                 scores[stock_code] = self.score(stock_code, engine)
@@ -145,13 +145,11 @@ class MultiAssetLogisticAgent(TradingAgent):
                 return (stock_code, 0.0)
         
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # 提交所有任务
             future_to_stock = {
                 executor.submit(_compute_score, stock_code): stock_code
                 for stock_code in self.stock_codes
             }
             
-            # 收集结果
             for future in as_completed(future_to_stock):
                 stock_code, score = future.result()
                 scores[stock_code] = score
@@ -192,13 +190,11 @@ class MultiAssetLogisticAgent(TradingAgent):
                     return (stock_code, 0.0)
             
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # 提交所有任务
                 future_to_stock = {
                     executor.submit(_compute_weight, stock_code, score): stock_code
                     for stock_code, score in scores.items()
                 }
                 
-                # 收集结果
                 for future in as_completed(future_to_stock):
                     stock_code, weight = future.result()
                     raw_weights[stock_code] = weight
@@ -230,13 +226,11 @@ class MultiAssetLogisticAgent(TradingAgent):
                     logger.error(f"更新 agent {agent.name} 状态时出错: {e}", exc_info=True)
             
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # 提交所有任务
                 futures = [
                     executor.submit(_update_agent, agent)
                     for agent in self.agents.values()
                 ]
                 
-                # 等待所有任务完成
                 for future in as_completed(futures):
                     future.result()  # 检查是否有异常
 

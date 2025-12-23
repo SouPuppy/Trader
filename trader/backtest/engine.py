@@ -21,6 +21,15 @@ from trader.features.cache import (
 from trader.dataloader import dataloader_ffill, Dataloader
 from trader.logger import get_logger
 
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    # 如果没有 tqdm，创建一个简单的替代品
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
+
 logger = get_logger(__name__)
 
 
@@ -266,7 +275,15 @@ class BacktestEngine:
             logger.info(f"测试期范围: {test_start_date} 至 {test_end_date}, 共 {len(test_period_dates)} 个交易日")
         
         # 按日期循环（遍历所有日期，但根据 only_test_period 决定是否执行交易）
-        for self.date_index, date in enumerate(dates_to_iterate):
+        # 使用 tqdm 显示进度条
+        date_iterator = tqdm(
+            enumerate(dates_to_iterate),
+            total=len(dates_to_iterate),
+            desc="回测进度",
+            unit="日",
+            disable=not HAS_TQDM
+        )
+        for self.date_index, date in date_iterator:
             self.current_date = date
             
             # 判断当前是否在测试期
