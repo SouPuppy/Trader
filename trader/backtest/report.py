@@ -428,6 +428,9 @@ class BacktestReport:
         returns = df['return_pct'].tolist()
         max_drawdown = self._calculate_max_drawdown(equities)
         
+        # 计算夏普比率
+        daily_returns, sharpe_info = self._calculate_daily_returns(risk_free_rate_annual=0.0)
+        
         # 计算回撤序列
         drawdowns = []
         peak = equities[0]
@@ -438,8 +441,42 @@ class BacktestReport:
             drawdowns.append(dd)
         df['drawdown'] = drawdowns
         
-        # 创建图表 - 4个子图：权益、回撤、现金/持仓、收益率
-        fig, axes = plt.subplots(4, 1, figsize=(12, 12))
+        # 计算滚动夏普比率（30天窗口）
+        rolling_sharpe = []
+        rolling_sharpe_dates = []
+        if sharpe_info and len(sharpe_info['daily_returns']) >= 30:
+            daily_returns_list = sharpe_info['daily_returns']
+            risk_free_rate_daily = sharpe_info['risk_free_rate_daily']
+            window = 30
+            
+            # 获取日期（从第二天开始，因为日收益率从第二天开始）
+            dates_for_returns = df['date'].iloc[1:].tolist()
+            
+            for i in range(window - 1, len(daily_returns_list)):
+                # 获取窗口内的收益率
+                window_returns = daily_returns_list[i - window + 1:i + 1]
+                # 计算超额收益
+                window_excess = [r - risk_free_rate_daily for r in window_returns]
+                
+                # 计算均值和标准差
+                if len(window_excess) > 1:
+                    mean_excess = sum(window_excess) / len(window_excess)
+                    variance = sum((x - mean_excess) ** 2 for x in window_excess) / (len(window_excess) - 1)
+                    std_excess = math.sqrt(variance) if variance > 0 else 0.0
+                    
+                    # 计算滚动夏普比率
+                    if std_excess > 0:
+                        rolling_sharpe_val = mean_excess / std_excess
+                    else:
+                        rolling_sharpe_val = 0.0
+                else:
+                    rolling_sharpe_val = 0.0
+                
+                rolling_sharpe.append(rolling_sharpe_val)
+                rolling_sharpe_dates.append(dates_for_returns[i])
+        
+        # 创建图表 - 5个子图：权益、回撤、现金/持仓、收益率、滚动夏普
+        fig, axes = plt.subplots(5, 1, figsize=(12, 14))
         # 使用英文标题避免字体问题
         fig.suptitle(f'Backtest Report - {stock_code} ({start_date} to {end_date})', fontsize=14)
         
@@ -486,13 +523,37 @@ class BacktestReport:
         ax4.plot(df['date'], df['return_pct'], label='Return Rate', linewidth=2, color='red')
         ax4.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
         ax4.set_ylabel('Return Rate (%)', fontsize=10)
-        ax4.set_xlabel('Date', fontsize=10)
         ax4.set_title('Cumulative Return Trend', fontsize=12)
         ax4.legend(loc='best')
         ax4.grid(True, alpha=0.3)
         ax4.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
         ax4.xaxis.set_major_locator(mdates.MonthLocator())
         plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45)
+        
+        # 5. 滚动夏普比率
+        ax5 = axes[4]
+        if rolling_sharpe and rolling_sharpe_dates:
+            ax5.plot(rolling_sharpe_dates, rolling_sharpe, label='Rolling Sharpe (30d)', linewidth=2, color='purple')
+            # 显示整体夏普比率水平线
+            if sharpe_info:
+                ax5.axhline(y=sharpe_info['sharpe_daily'], color='gray', linestyle='--', 
+                           label=f'Overall Sharpe Daily: {sharpe_info["sharpe_daily"]:.4f}', alpha=0.7)
+            ax5.axhline(y=0, color='black', linestyle='-', alpha=0.3, linewidth=0.5)
+            ax5.set_ylabel('Sharpe Ratio (Daily)', fontsize=10)
+            ax5.set_xlabel('Date', fontsize=10)
+            ax5.set_title('Rolling Sharpe Ratio (30-day window)', fontsize=12)
+            ax5.legend(loc='best')
+            ax5.grid(True, alpha=0.3)
+            ax5.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax5.xaxis.set_major_locator(mdates.MonthLocator())
+            plt.setp(ax5.xaxis.get_majorticklabels(), rotation=45)
+        else:
+            ax5.text(0.5, 0.5, 'Insufficient data for rolling Sharpe calculation\n(need at least 30 trading days)',
+                    transform=ax5.transAxes, ha='center', va='center', fontsize=10)
+            ax5.set_ylabel('Sharpe Ratio (Daily)', fontsize=10)
+            ax5.set_xlabel('Date', fontsize=10)
+            ax5.set_title('Rolling Sharpe Ratio (30-day window)', fontsize=12)
+            ax5.grid(True, alpha=0.3)
         
         plt.tight_layout()
         
