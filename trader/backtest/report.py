@@ -3,9 +3,10 @@
 生成交易报告和走势图
 """
 import json
+import math
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -185,7 +186,68 @@ class BacktestReport:
             # 计算最大回撤
             max_drawdown = self._calculate_max_drawdown(equities)
             lines.append(f"最大回撤:     {max_drawdown:.2f}%")
+            
+            # 计算夏普比率并在统计信息中显示
+            daily_returns, sharpe_info = self._calculate_daily_returns(risk_free_rate_annual=0.0)
+            if sharpe_info:
+                lines.append(f"年化夏普比率: {sharpe_info['sharpe_annual']:.4f}")
+                lines.append(f"日频夏普比率: {sharpe_info['sharpe_daily']:.4f}")
             lines.append("")
+            
+            # 详细夏普比率计算
+            if sharpe_info:
+                lines.append("夏普比率计算")
+                lines.append("-" * 80)
+                lines.append("1. 日收益率序列计算:")
+                lines.append(f"   公式: r_t = E_t / E_{{t-1}} - 1")
+                lines.append(f"   其中 E_t 是第 t 天收盘后的账户净值")
+                lines.append(f"   交易日数: {sharpe_info['num_trading_days']} 天")
+                if len(daily_returns) <= 10:
+                    # 如果收益率序列较短，显示所有值
+                    for i, r in enumerate(daily_returns, 1):
+                        lines.append(f"   r_{i} = {r:.6f}")
+                else:
+                    # 只显示前5个和后5个
+                    for i, r in enumerate(daily_returns[:5], 1):
+                        lines.append(f"   r_{i} = {r:.6f}")
+                    lines.append(f"   ... (共 {len(daily_returns)} 个值)")
+                    for i, r in enumerate(daily_returns[-5:], len(daily_returns)-4):
+                        lines.append(f"   r_{i} = {r:.6f}")
+                lines.append("")
+                
+                lines.append("2. 无风险利率:")
+                lines.append(f"   年化无风险利率 R_f(ann) = {sharpe_info['risk_free_rate_annual']:.4f} ({sharpe_info['risk_free_rate_annual']*100:.2f}%)")
+                lines.append(f"   日化无风险利率 r_f = (1 + R_f(ann))^(1/252) - 1")
+                lines.append(f"   r_f = {sharpe_info['risk_free_rate_daily']:.6f} ({sharpe_info['risk_free_rate_daily']*100:.4f}%)")
+                lines.append("")
+                
+                lines.append("3. 超额日收益:")
+                lines.append(f"   公式: x_t = r_t - r_f")
+                excess_returns = sharpe_info['excess_returns']
+                if len(excess_returns) <= 10:
+                    for i, x in enumerate(excess_returns, 1):
+                        lines.append(f"   x_{i} = {x:.6f}")
+                else:
+                    for i, x in enumerate(excess_returns[:5], 1):
+                        lines.append(f"   x_{i} = {x:.6f}")
+                    lines.append(f"   ... (共 {len(excess_returns)} 个值)")
+                    for i, x in enumerate(excess_returns[-5:], len(excess_returns)-4):
+                        lines.append(f"   x_{i} = {x:.6f}")
+                lines.append("")
+                
+                lines.append("4. 均值和标准差:")
+                lines.append(f"   样本均值: x̄ = (1/T) * Σx_t = {sharpe_info['mean_excess_return']:.6f}")
+                lines.append(f"   样本标准差: s = sqrt((1/(T-1)) * Σ(x_t - x̄)^2) = {sharpe_info['std_excess_return']:.6f}")
+                lines.append("")
+                
+                lines.append("5. 夏普比率:")
+                lines.append(f"   日频夏普比率: Sharpe_daily = x̄ / s = {sharpe_info['sharpe_daily']:.6f}")
+                lines.append(f"   年化夏普比率: Sharpe_ann = sqrt(252) * Sharpe_daily = {sharpe_info['sharpe_annual']:.6f}")
+                lines.append("")
+                lines.append(f"最终结果:")
+                lines.append(f"   日频夏普比率: {sharpe_info['sharpe_daily']:.4f}")
+                lines.append(f"   年化夏普比率: {sharpe_info['sharpe_annual']:.4f}")
+                lines.append("")
         
         lines.append("=" * 80)
         
@@ -213,6 +275,41 @@ class BacktestReport:
                 "return_pct": final_record['return_pct'],
                 "positions": final_record['positions']
             }
+            
+            # 添加统计信息
+            equities = [r['equity'] for r in self.daily_records]
+            returns = [r['return_pct'] for r in self.daily_records]
+            max_drawdown = self._calculate_max_drawdown(equities)
+            
+            # 计算夏普比率
+            daily_returns, sharpe_info = self._calculate_daily_returns(risk_free_rate_annual=0.0)
+            
+            report["statistics"] = {
+                "max_equity": max(equities),
+                "min_equity": min(equities),
+                "max_return_pct": max(returns),
+                "min_return_pct": min(returns),
+                "max_drawdown_pct": max_drawdown
+            }
+            
+            # 在统计信息中添加夏普比率
+            if sharpe_info:
+                report["statistics"]["sharpe_annual"] = sharpe_info['sharpe_annual']
+                report["statistics"]["sharpe_daily"] = sharpe_info['sharpe_daily']
+            
+            # 添加详细的夏普比率信息
+            if sharpe_info:
+                report["sharpe_ratio"] = {
+                    "risk_free_rate_annual": sharpe_info['risk_free_rate_annual'],
+                    "risk_free_rate_daily": sharpe_info['risk_free_rate_daily'],
+                    "mean_excess_return": sharpe_info['mean_excess_return'],
+                    "std_excess_return": sharpe_info['std_excess_return'],
+                    "sharpe_daily": sharpe_info['sharpe_daily'],
+                    "sharpe_annual": sharpe_info['sharpe_annual'],
+                    "num_trading_days": sharpe_info['num_trading_days'],
+                    "daily_returns": daily_returns,
+                    "excess_returns": sharpe_info['excess_returns']
+                }
         
         return report
     
@@ -232,6 +329,79 @@ class BacktestReport:
                 max_dd = dd
         
         return max_dd
+    
+    def _calculate_daily_returns(self, risk_free_rate_annual: float = 0.0) -> Tuple[List[float], Dict]:
+        """
+        计算日收益率序列和夏普比率
+        
+        Args:
+            risk_free_rate_annual: 年化无风险利率（默认0）
+            
+        Returns:
+            (daily_returns, sharpe_info): 日收益率列表和夏普比率详细信息字典
+        """
+        if len(self.daily_records) < 2:
+            return [], {}
+        
+        # 提取每日净值（按日期排序）
+        df = pd.DataFrame(self.daily_records)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date')
+        equities = df['equity'].tolist()
+        
+        # 计算日收益率序列: r_t = E_t / E_{t-1} - 1
+        daily_returns = []
+        for i in range(1, len(equities)):
+            if equities[i-1] > 0:
+                r_t = equities[i] / equities[i-1] - 1
+                daily_returns.append(r_t)
+            else:
+                daily_returns.append(0.0)
+        
+        if not daily_returns:
+            return [], {}
+        
+        # 日化无风险利率: r_f = (1 + R_f(ann))^(1/252) - 1
+        if risk_free_rate_annual == 0.0:
+            risk_free_rate_daily = 0.0
+        else:
+            risk_free_rate_daily = math.pow(1 + risk_free_rate_annual, 1/252) - 1
+        
+        # 计算超额收益: x_t = r_t - r_f
+        excess_returns = [r - risk_free_rate_daily for r in daily_returns]
+        
+        # 计算样本均值和标准差
+        T = len(excess_returns)
+        mean_excess_return = sum(excess_returns) / T
+        
+        # 样本标准差（无偏估计）: s = sqrt((1/(T-1)) * Σ(x_t - x̄)^2)
+        variance = sum((x - mean_excess_return) ** 2 for x in excess_returns) / (T - 1) if T > 1 else 0.0
+        std_excess_return = math.sqrt(variance) if variance > 0 else 0.0
+        
+        # 计算日频夏普比率: Sharpe_daily = x̄ / s
+        if std_excess_return > 0:
+            sharpe_daily = mean_excess_return / std_excess_return
+        else:
+            sharpe_daily = 0.0
+        
+        # 年化夏普比率: Sharpe_ann = sqrt(252) * Sharpe_daily
+        sharpe_annual = math.sqrt(252) * sharpe_daily
+        
+        # 构建详细信息字典
+        sharpe_info = {
+            'risk_free_rate_annual': risk_free_rate_annual,
+            'risk_free_rate_daily': risk_free_rate_daily,
+            'daily_returns': daily_returns,
+            'excess_returns': excess_returns,
+            'mean_excess_return': mean_excess_return,
+            'std_excess_return': std_excess_return,
+            'sharpe_daily': sharpe_daily,
+            'sharpe_annual': sharpe_annual,
+            'num_trading_days': T,
+            'equities': equities
+        }
+        
+        return daily_returns, sharpe_info
     
     def _generate_charts(self, stock_code: str, start_date: str, end_date: str):
         """生成走势图"""
@@ -253,8 +423,23 @@ class BacktestReport:
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values('date')
         
-        # 创建图表
-        fig, axes = plt.subplots(3, 1, figsize=(12, 10))
+        # 计算统计信息
+        equities = df['equity'].tolist()
+        returns = df['return_pct'].tolist()
+        max_drawdown = self._calculate_max_drawdown(equities)
+        
+        # 计算回撤序列
+        drawdowns = []
+        peak = equities[0]
+        for equity in equities:
+            if equity > peak:
+                peak = equity
+            dd = (peak - equity) / peak * 100
+            drawdowns.append(dd)
+        df['drawdown'] = drawdowns
+        
+        # 创建图表 - 4个子图：权益、回撤、现金/持仓、收益率
+        fig, axes = plt.subplots(4, 1, figsize=(12, 12))
         # 使用英文标题避免字体问题
         fig.suptitle(f'Backtest Report - {stock_code} ({start_date} to {end_date})', fontsize=14)
         
@@ -271,30 +456,43 @@ class BacktestReport:
         ax1.xaxis.set_major_locator(mdates.MonthLocator())
         plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
         
-        # 2. 现金和持仓市值
+        # 2. 回撤曲线
         ax2 = axes[1]
-        ax2.plot(df['date'], df['cash'], label='Cash', linewidth=1.5, color='green')
-        ax2.plot(df['date'], df['positions_value'], label='Positions Value', linewidth=1.5, color='orange')
-        ax2.set_ylabel('Amount (CNY)', fontsize=10)
-        ax2.set_title('Cash vs Positions Value', fontsize=12)
+        ax2.fill_between(df['date'], df['drawdown'], 0, alpha=0.3, color='red', label='Drawdown')
+        ax2.plot(df['date'], df['drawdown'], linewidth=1.5, color='darkred')
+        ax2.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+        ax2.set_ylabel('Drawdown (%)', fontsize=10)
+        ax2.set_title(f'Drawdown Trend (Max: {max_drawdown:.2f}%)', fontsize=12)
         ax2.legend(loc='best')
         ax2.grid(True, alpha=0.3)
         ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
         ax2.xaxis.set_major_locator(mdates.MonthLocator())
         plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
         
-        # 3. 收益率曲线
+        # 3. 现金和持仓市值
         ax3 = axes[2]
-        ax3.plot(df['date'], df['return_pct'], label='Return Rate', linewidth=2, color='red')
-        ax3.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-        ax3.set_ylabel('Return Rate (%)', fontsize=10)
-        ax3.set_xlabel('Date', fontsize=10)
-        ax3.set_title('Cumulative Return Trend', fontsize=12)
+        ax3.plot(df['date'], df['cash'], label='Cash', linewidth=1.5, color='green')
+        ax3.plot(df['date'], df['positions_value'], label='Positions Value', linewidth=1.5, color='orange')
+        ax3.set_ylabel('Amount (CNY)', fontsize=10)
+        ax3.set_title('Cash vs Positions Value', fontsize=12)
         ax3.legend(loc='best')
         ax3.grid(True, alpha=0.3)
         ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
         ax3.xaxis.set_major_locator(mdates.MonthLocator())
         plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
+        
+        # 4. 收益率曲线
+        ax4 = axes[3]
+        ax4.plot(df['date'], df['return_pct'], label='Return Rate', linewidth=2, color='red')
+        ax4.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+        ax4.set_ylabel('Return Rate (%)', fontsize=10)
+        ax4.set_xlabel('Date', fontsize=10)
+        ax4.set_title('Cumulative Return Trend', fontsize=12)
+        ax4.legend(loc='best')
+        ax4.grid(True, alpha=0.3)
+        ax4.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        ax4.xaxis.set_major_locator(mdates.MonthLocator())
+        plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45)
         
         plt.tight_layout()
         
