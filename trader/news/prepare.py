@@ -117,8 +117,31 @@ def parse_news_json(news_str: str) -> Optional[Dict]:
     if not news_str:
         return None
     
+    import ast
+    
+    # 先尝试 ast.literal_eval（处理 Python 字典格式，如使用单引号的情况）
+    # 这通常比 JSON 解析更快，且能处理更多格式
+    if news_str.startswith("{") or news_str.startswith("["):
+        try:
+            news_obj = ast.literal_eval(news_str)
+            
+            # 如果是列表，取第一个元素
+            if isinstance(news_obj, list):
+                if len(news_obj) > 0:
+                    news_obj = news_obj[0]
+                else:
+                    logger.warning("新闻列表为空")
+                    return None
+            
+            # 确保是字典类型
+            if isinstance(news_obj, dict):
+                return news_obj
+        except (ValueError, SyntaxError) as ast_e:
+            # ast.literal_eval 失败，继续尝试 JSON 解析
+            logger.debug(f"ast.literal_eval 解析失败，尝试 JSON: {ast_e}")
+    
+    # 尝试 JSON 解析
     try:
-        # 尝试直接解析 JSON
         news_obj = json.loads(news_str)
         
         # 如果是列表，取第一个元素
@@ -137,24 +160,9 @@ def parse_news_json(news_str: str) -> Optional[Dict]:
         return news_obj
         
     except json.JSONDecodeError as e:
-        # 尝试修复常见的 JSON 格式问题
+        # JSON 解析失败，记录警告（此时两种方法都失败了）
         logger.warning(f"JSON 解析失败: {e}")
         logger.debug(f"原始数据前200字符: {news_str[:200]}")
-        
-        # 尝试修复单引号问题（Python 字典格式）
-        try:
-            # 如果看起来像 Python 字典格式（使用单引号），尝试用 ast.literal_eval
-            import ast
-            if news_str.startswith("{") or news_str.startswith("["):
-                news_obj = ast.literal_eval(news_str)
-                if isinstance(news_obj, list) and len(news_obj) > 0:
-                    news_obj = news_obj[0]
-                if isinstance(news_obj, dict):
-                    logger.info("使用 ast.literal_eval 成功解析 Python 字典格式")
-                    return news_obj
-        except Exception as ast_e:
-            logger.debug(f"ast.literal_eval 也失败: {ast_e}")
-        
         return None
         
     except Exception as e:

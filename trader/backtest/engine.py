@@ -21,6 +21,7 @@ from trader.features.cache import (
 )
 from trader.dataloader import dataloader_ffill, Dataloader
 from trader.logger import get_logger
+from trader.rag.db.queries import get_db_connection, ensure_tables
 
 try:
     from tqdm import tqdm
@@ -76,7 +77,8 @@ class BacktestEngine:
     
     def __init__(self, account: Account, market: Market, enable_report: bool = True, 
                  report_output_dir: Optional[Path] = None, report_title: Optional[str] = None,
-                 train_test_split_ratio: float = 0.7, only_test_period: bool = True):
+                 train_test_split_ratio: float = 0.7, only_test_period: bool = True,
+                 record_trade_history: bool = True, clear_trade_history: bool = True):
         """
         初始化回测引擎
         
@@ -88,6 +90,8 @@ class BacktestEngine:
             report_title: 报告标题，用于创建子文件夹和文件名
             train_test_split_ratio: 训练/测试分割比例（默认0.7，即70%用于训练，30%用于测试）
             only_test_period: 是否只运行测试期（默认True，即只运行测试期的交易，训练期只用于模型训练）
+            record_trade_history: 是否记录交易到 trade_history 表（默认True）
+            clear_trade_history: 是否在启动时清空 trade_history 表（默认True，模拟盘需要清空）
         """
         self.account = account
         self.market = market
@@ -101,6 +105,24 @@ class BacktestEngine:
         self.train_test_split_date: Optional[str] = None  # 训练/测试分割日期（在 run 时计算）
         self.only_test_period = only_test_period  # 是否只运行测试期
         self.report_title = report_title  # 保存 report_title，用于判断是否生成报告文件
+        self.record_trade_history = record_trade_history  # 是否记录交易历史
+        
+        # Ensure trade_history table exists
+        if record_trade_history:
+            ensure_tables()
+            
+            # Clear trade_history table if requested (for backtesting, not real trading)
+            if clear_trade_history:
+                try:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM trade_history")
+                    conn.commit()
+                    conn.close()
+                    logger.info("Cleared trade_history table (simulation mode)")
+                except Exception as e:
+                    logger.warning(f"Failed to clear trade_history table: {e}", exc_info=True)
+        
         self.report: Optional[BacktestReport] = None
         if enable_report:
             self.report = BacktestReport(report_output_dir, title=report_title)
@@ -159,6 +181,33 @@ class BacktestEngine:
         """
         self.on_date_callbacks.append(callback)
     
+    def _record_trade_to_db(self, stock_code: str, action: str, price: float, volume: float, trade_time: str):
+        """
+        记录交易到 trade_history 表
+        
+        Args:
+            stock_code: 股票代码
+            action: 交易动作 ('BUY' or 'SELL')
+            price: 交易价格
+            volume: 交易数量（股数）
+            trade_time: 交易时间 (ISO8601 format)
+        """
+        if not self.record_trade_history:
+            return
+        
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO trade_history (stock_code, trade_time, action, price, volume)
+                VALUES (?, ?, ?, ?, ?)
+            """, (stock_code, trade_time, action, price, volume))
+            conn.commit()
+            conn.close()
+            logger.debug(f"Recorded trade to DB: {action} {volume} shares of {stock_code} @ {price:.2f} at {trade_time}")
+        except Exception as e:
+            logger.warning(f"Failed to record trade to DB: {e}", exc_info=True)
+    
     def _execute_actions(self):
         """执行队列中的所有行为"""
         # 检查是否在训练期（如果设置了分割日期，训练期不允许交易）
@@ -188,8 +237,11 @@ class BacktestEngine:
                     shares = int(cost / price)  # 向下取整
                     
                     if shares > 0:
-                        self.account.buy(action.stock_code, shares, price, 
-                                       datetime.strptime(self.current_date, "%Y-%m-%d"))
+                        trade_date = datetime.strptime(self.current_date, "%Y-%m-%d")
+                        if self.account.buy(action.stock_code, shares, price, trade_date):
+                            # 记录到数据库
+                            trade_time = f"{self.current_date}T00:00:00"
+                            self._record_trade_to_db(action.stock_code, 'BUY', price, shares, trade_time)
                     else:
                         # 价格太高，买不到1股
                         logger.warning(f"金额 {action.amount:.2f} 无法买入至少1股 (价格: {price:.2f})，跳过")
@@ -197,16 +249,22 @@ class BacktestEngine:
                     # 按股数买入
                     cost = action.shares * price
                     if cost <= self.account.cash:
-                        self.account.buy(action.stock_code, action.shares, price,
-                                       datetime.strptime(self.current_date, "%Y-%m-%d"))
+                        trade_date = datetime.strptime(self.current_date, "%Y-%m-%d")
+                        if self.account.buy(action.stock_code, action.shares, price, trade_date):
+                            # 记录到数据库
+                            trade_time = f"{self.current_date}T00:00:00"
+                            self._record_trade_to_db(action.stock_code, 'BUY', price, action.shares, trade_time)
                     else:
                         logger.warning(f"现金不足，无法买入 {action.shares} 股 {action.stock_code}")
             
             # 执行卖出
             elif action.action_type == Action.SELL:
                 if action.shares:
-                    self.account.sell(action.stock_code, action.shares, price,
-                                    datetime.strptime(self.current_date, "%Y-%m-%d"))
+                    trade_date = datetime.strptime(self.current_date, "%Y-%m-%d")
+                    if self.account.sell(action.stock_code, action.shares, price, trade_date):
+                        # 记录到数据库
+                        trade_time = f"{self.current_date}T00:00:00"
+                        self._record_trade_to_db(action.stock_code, 'SELL', price, action.shares, trade_time)
     
     def run(self, stock_code: str, start_date: Optional[str] = None, 
             end_date: Optional[str] = None):
