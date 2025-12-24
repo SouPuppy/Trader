@@ -16,12 +16,12 @@ export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 # 检查是否安装了 wandb（在 poetry 环境中）
 USE_WANDB=""
 if poetry run python -c "import wandb" 2>/dev/null; then
-    echo "检测到 wandb 已安装"
-    echo "提示: 如果想使用 wandb 记录训练过程，请添加 --wandb 参数"
-    echo "     如果未登录 wandb，请先运行: poetry run wandb login"
+    echo "检测到 wandb 已安装，默认启用 wandb 记录"
+    echo "提示: 如果未登录 wandb，请先运行: poetry run wandb login"
+    echo "     如果想禁用 wandb，请修改脚本中的 USE_WANDB 变量"
     echo ""
-    # 默认不使用 wandb，如果需要可以取消下面的注释
-    # USE_WANDB="--wandb"
+    # 默认启用 wandb
+    USE_WANDB="--wandb"
 else
     echo "警告: wandb 未安装，将不使用 wandb 记录"
     echo "安装命令: poetry add wandb"

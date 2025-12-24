@@ -22,37 +22,130 @@ from trader.predictor.config_loader import (
     get_training_config,
     get_data_config
 )
-from trader.backtest.market import Market
+from trader.dataloader import dataloader_linear
 from trader.logger import get_logger
+from trader.config import PROJECT_ROOT
+import sqlite3
+from trader.config import DB_PATH
 
 logger = get_logger(__name__)
 
 
 def load_stock_data(stock_code: str, start_date: Optional[str] = None, 
                    end_date: Optional[str] = None) -> pd.DataFrame:
-    """加载股票数据"""
-    market = Market()
-    data = market.get_price_data(stock_code, start_date, end_date)
+    """
+    加载股票数据（使用 dataloader_linear，会处理缺失值和节假日）
     
-    if data.empty:
-        logger.warning(f"股票 {stock_code} 没有数据")
+    使用 dataloader_linear 可以：
+    1. 自动处理缺失值（线性插值）
+    2. 补全节假日数据
+    3. 确保数据连续性
+    """
+    try:
+        # 如果没有指定日期范围，需要从数据库获取可用日期范围
+        if start_date is None or end_date is None:
+            conn = sqlite3.connect(DB_PATH)
+            query = """
+                SELECT MIN(datetime) as min_date, MAX(datetime) as max_date
+                FROM raw_data
+                WHERE stock_code = ?
+            """
+            cursor = conn.execute(query, (stock_code,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            if not row or row[0] is None:
+                logger.warning(f"股票 {stock_code} 没有数据")
+                return pd.DataFrame()
+            
+            if start_date is None:
+                start_date = row[0]
+            if end_date is None:
+                end_date = row[1]
+        
+        # 使用 dataloader_linear 加载数据（只加载 close_price）
+        loader = dataloader_linear(stock_code)
+        data = loader.load(
+            start_date=start_date,
+            end_date=end_date,
+            feature_names=['close_price'],
+            force=False
+        )
+        
+        if data.empty:
+            logger.warning(f"股票 {stock_code} 没有数据")
+            return pd.DataFrame()
+        
+        # 确保 close_price 列存在
+        if 'close_price' not in data.columns:
+            logger.warning(f"股票 {stock_code} 没有 close_price 列")
+            return pd.DataFrame()
+        
+        # 确保 close_price 是数值类型
+        data['close_price'] = pd.to_numeric(data['close_price'], errors='coerce')
+        
+        # dataloader_linear 已经处理了缺失值，但为了安全起见，检查一下
+        if data['close_price'].isna().any():
+            logger.warning(f"股票 {stock_code} 仍有缺失值，使用前向和后向填充")
+            data['close_price'] = data['close_price'].ffill().bfill().fillna(0)
+        
+        logger.info(
+            f"成功从 dataloader_linear 加载 {stock_code} 的数据: "
+            f"{len(data)} 条记录, "
+            f"日期范围: {data.index.min()} 到 {data.index.max()}"
+        )
+        
+        return data
+        
+    except Exception as e:
+        logger.error(f"加载股票 {stock_code} 数据时出错: {e}", exc_info=True)
         return pd.DataFrame()
+
+
+def create_sequences_from_data(data: pd.DataFrame, seq_len: int = 21, use_returns: bool = True):
+    """
+    从数据创建序列（前21天预测后1天）
     
-    return data
-
-
-def create_sequences_from_data(data: pd.DataFrame, seq_len: int = 21):
-    """从数据创建序列（前21天预测后1天）"""
+    如果 use_returns=True，使用收益率（相对变化）而不是绝对价格
+    这样可以避免不同股票价格水平差异的问题
+    """
+    # 确保数据按日期排序
+    if isinstance(data.index, pd.DatetimeIndex):
+        data = data.sort_index()
+    elif 'datetime' in data.columns:
+        data = data.sort_values('datetime')
+        if not isinstance(data.index, pd.DatetimeIndex):
+            data = data.set_index('datetime')
+    
     close_prices = data['close_price'].values
     
-    sequences = []
-    targets = []
-    
-    for i in range(seq_len, len(close_prices)):
-        sequences.append(close_prices[i - seq_len:i])
-        targets.append(close_prices[i])
-    
-    return np.array(sequences), np.array(targets)
+    if use_returns:
+        # 计算收益率：(price_t - price_{t-1}) / price_{t-1}
+        # 为了避免除零，使用价格变化率
+        returns = np.diff(close_prices) / (close_prices[:-1] + 1e-8)
+        # 第一个价格作为基准，后续都是收益率
+        sequences = []
+        targets = []
+        
+        # 需要 seq_len+1 个价格点来创建 seq_len 个收益率序列
+        for i in range(seq_len + 1, len(close_prices)):
+            # 提取收益率序列
+            seq_returns = returns[i - seq_len - 1:i - 1]
+            sequences.append(seq_returns)
+            # 目标值是下一天的收益率
+            targets.append(returns[i - 1])
+        
+        return np.array(sequences), np.array(targets)
+    else:
+        # 使用绝对价格（不推荐用于多股票训练）
+        sequences = []
+        targets = []
+        
+        for i in range(seq_len, len(close_prices)):
+            sequences.append(close_prices[i - seq_len:i])
+            targets.append(close_prices[i])
+        
+        return np.array(sequences), np.array(targets)
 
 
 def train_shared_model(
@@ -75,6 +168,11 @@ def train_shared_model(
         use_close_only=True  # 只用 close_price
     )
     
+    # 使用收益率模式（推荐用于多股票训练）
+    # 这样可以避免不同股票价格水平差异的问题
+    use_returns = True
+    logger.info(f"使用收益率模式: {use_returns}（避免不同股票价格水平差异问题）")
+    
     # 加载所有股票的数据并创建序列
     start_date = data_config.get('start_date') or None
     end_date = data_config.get('end_date') or None
@@ -95,8 +193,14 @@ def train_shared_model(
             logger.warning(f"股票 {stock_code} 没有 close_price 列，跳过")
             continue
         
-        # 创建序列
-        sequences, targets = create_sequences_from_data(data, predictor.seq_len)
+        # 确保数据按日期排序
+        if 'datetime' in data.columns:
+            data = data.sort_values('datetime')
+        elif not isinstance(data.index, pd.DatetimeIndex):
+            data = data.sort_index()
+        
+        # 创建序列（使用收益率）
+        sequences, targets = create_sequences_from_data(data, predictor.seq_len, use_returns=use_returns)
         
         if len(sequences) > 0:
             all_sequences.append(sequences)
@@ -117,7 +221,7 @@ def train_shared_model(
     # 重塑为 LSTM 输入格式 (n_samples, seq_len, n_features)
     X_all = X_all.reshape(-1, predictor.seq_len, 1)
     
-    # 数据标准化（全局标准化）
+    # 数据标准化（收益率已经相对标准化，但可以进一步标准化）
     from sklearn.preprocessing import StandardScaler
     
     X_reshaped = X_all.reshape(-1, 1)
@@ -127,6 +231,9 @@ def train_shared_model(
     
     predictor.scaler_y = StandardScaler()
     y_scaled = predictor.scaler_y.fit_transform(y_all.reshape(-1, 1)).flatten()
+    
+    # 保存使用收益率的标志
+    predictor.use_returns = use_returns
     
     # 分割训练集和验证集
     validation_split = training_config.get('validation_split', 0.2)
@@ -171,6 +278,7 @@ def train_shared_model(
     if use_wandb:
         try:
             import wandb
+            
             wandb_config = {
                 "model_type": "shared",
                 "num_stocks": len(train_stocks),
@@ -184,24 +292,48 @@ def train_shared_model(
                 "learning_rate": training_config.get('learning_rate', 0.001),
             }
             
-            try:
-                api = wandb.Api()
-                try:
-                    viewer = wandb.api.viewer()
-                    wandb_mode = "online" if viewer else "offline"
-                except:
-                    wandb_mode = "offline"
-            except:
-                wandb_mode = "offline"
+            # 直接使用在线模式，wandb 会自动处理登录状态
+            # 如果未登录，wandb 会提示或使用离线模式
+            logger.info("初始化 wandb（在线模式）...")
             
-            wandb.init(
-                project="lstm-simple",
-                name="shared_model",
-                mode=wandb_mode,
-                config=wandb_config
-            )
+            try:
+                run = wandb.init(
+                    project="lstm-simple",
+                    name="shared_model",
+                    mode="online",  # 强制使用在线模式
+                    config=wandb_config
+                )
+                
+                # wandb 成功初始化，检查是否有 URL（在线模式会有 URL）
+                if hasattr(run, 'url') and run.url:
+                    logger.info("✓ wandb 在线模式已启动，数据将同步到 wandb.ai")
+                    logger.info(f"  项目: lstm-simple")
+                    logger.info(f"  运行: shared_model")
+                    logger.info(f"  查看: {run.url}")
+                else:
+                    logger.info("✓ wandb 已启动（在线模式）")
+                    logger.info(f"  项目: lstm-simple")
+                    logger.info(f"  运行: shared_model")
+                    
+            except Exception as e:
+                logger.error(f"wandb 在线模式初始化失败: {e}")
+                logger.warning("尝试使用离线模式...")
+                try:
+                    run = wandb.init(
+                        project="lstm-simple",
+                        name="shared_model",
+                        mode="offline",
+                        config=wandb_config
+                    )
+                    logger.info(f"wandb 离线模式已启动，数据保存在: {PROJECT_ROOT / 'wandb'}")
+                    logger.info(f"要同步到云端，请运行: wandb sync {PROJECT_ROOT / 'wandb' / 'offline-run-*'}")
+                except Exception as e2:
+                    logger.error(f"wandb 离线模式也失败: {e2}")
+                    use_wandb = False
+                    
         except ImportError:
             logger.warning("wandb 未安装，跳过 wandb 记录")
+            logger.warning("安装命令: poetry add wandb")
             use_wandb = False
     
     # 训练循环

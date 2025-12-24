@@ -19,15 +19,16 @@ if str(project_root) not in sys.path:
 from trader.predictor.Predictor import Predictor
 from trader.backtest.market import Market
 from trader.logger import get_logger
+from trader.predictor.config_loader import get_train_stocks, get_test_stocks
 
 logger = get_logger(__name__)
 
 
 def get_trained_stocks() -> List[str]:
     """
-    获取所有已训练模型的股票代码
+    获取用于可视化的股票代码列表
     
-    优先使用共享模型，如果共享模型存在，返回所有训练股票
+    优先使用共享模型，如果共享模型存在，返回测试集股票（用于评估模型性能）
     否则返回单独模型的股票列表
     
     Returns:
@@ -45,23 +46,23 @@ def get_trained_stocks() -> List[str]:
     shared_scaler_path = lstm_dir / 'scaler.pkl'
     
     if shared_model_path.exists() and shared_scaler_path.exists():
-        # 使用共享模型，返回所有训练股票（从配置文件或默认列表）
+        # 使用共享模型，返回测试集股票（用于评估模型性能）
         try:
-            from trader.predictor.config_loader import get_train_stocks
-            stocks = get_train_stocks()
+            from trader.predictor.config_loader import get_test_stocks
+            stocks = get_test_stocks()
             if stocks:
-                logger.info(f"使用共享模型，股票列表: {', '.join(stocks)}")
+                logger.info(f"使用共享模型，测试集股票列表: {', '.join(stocks)}")
                 return sorted(stocks)
         except Exception as e:
-            logger.warning(f"无法从配置文件获取股票列表: {e}")
+            logger.warning(f"无法从配置文件获取测试集股票列表: {e}")
         
-        # 如果无法从配置获取，使用默认的10支股票
-        default_stocks = [
-            'AAPL.O', 'AMZN.O', 'AVGO.O', 'COST.O', 'CSCO.O',
-            'GOOGL.O', 'META.O', 'MSFT.O', 'NVDA.O', 'TSLA.O'
+        # 如果无法从配置获取，使用默认的10支测试股票
+        default_test_stocks = [
+            'ASML.O', 'EBAY.O', 'ENPH.O', 'FAST.O', 'JD.O',
+            'MRNA.O', 'NFLX.O', 'PDD.O', 'PYPL.O', 'TMUS.O'
         ]
-        logger.info(f"使用默认股票列表: {', '.join(default_stocks)}")
-        return default_stocks
+        logger.info(f"使用默认测试集股票列表: {', '.join(default_test_stocks)}")
+        return default_test_stocks
     
     # 如果没有共享模型，查找单独模型
     model_files = list(weights_dir.glob('lstm_*.pth'))
@@ -226,11 +227,17 @@ def generate_predictions(
     predictions = []
     prediction_dates = []
     
-    # 从 seq_len 天之后开始预测
-    for i in range(predictor.seq_len, min(len(data), predictor.seq_len + lookback_days)):
+    # 检查是否使用收益率模式
+    use_returns = getattr(predictor, 'use_returns', False)
+    
+    # 从 seq_len 天之后开始预测（如果使用收益率模式，需要 seq_len+1 天）
+    start_idx = predictor.seq_len + 1 if use_returns else predictor.seq_len
+    for i in range(start_idx, min(len(data), start_idx + lookback_days)):
         try:
             # 获取前 seq_len 天的 close_price 用于预测
-            window_close_prices = close_prices[i - predictor.seq_len:i]
+            # 如果使用收益率模式，需要 seq_len+1 个价格点
+            window_size = predictor.seq_len + 1 if use_returns else predictor.seq_len
+            window_close_prices = close_prices[i - window_size:i]
             
             # 预测下一天的价格
             if predictor.use_close_only:
@@ -434,44 +441,87 @@ def visualize_all_stocks(
                     else:
                         actual_prices.append(np.nan)
             
-            # 计算误差
+            # 计算准确度
             valid_pairs = [(p, a) for p, a in zip(predictions, actual_prices) if not np.isnan(a)]
             if valid_pairs:
-                errors = [p - a for p, a in valid_pairs]
-                error_pcts = [(p - a) / a * 100 for p, a in valid_pairs]
+                # 计算方向准确度（预测涨跌方向是否正确）
+                direction_correct = 0
+                # 计算相对准确度（1 - 平均相对误差）
+                relative_errors = []
+                
+                for i in range(1, len(valid_pairs)):
+                    pred_prev, actual_prev = valid_pairs[i-1]
+                    pred_curr, actual_curr = valid_pairs[i]
+                    
+                    # 方向准确度：预测的变化方向是否与实际一致
+                    pred_direction = 1 if pred_curr > pred_prev else -1
+                    actual_direction = 1 if actual_curr > actual_prev else -1
+                    if pred_direction == actual_direction:
+                        direction_correct += 1
+                    
+                    # 相对准确度：1 - |pred - actual| / actual
+                    if actual_curr > 0:
+                        relative_error = abs(pred_curr - actual_curr) / actual_curr
+                        relative_errors.append(relative_error)
+                
+                direction_accuracy = direction_correct / (len(valid_pairs) - 1) * 100 if len(valid_pairs) > 1 else 0
+                avg_relative_accuracy = (1 - np.mean(relative_errors)) * 100 if relative_errors else 0
                 
                 stats = {
                     'stock_code': stock_code,
                     'predictions': len(valid_pairs),
-                    'mae': np.mean(np.abs(errors)),
-                    'mape': np.mean(np.abs(error_pcts)),
-                    'rmse': np.sqrt(np.mean([e**2 for e in errors])),
-                    'max_error': np.max(np.abs(errors)),
-                    'min_error': np.min(np.abs(errors))
+                    'direction_accuracy': direction_accuracy,
+                    'relative_accuracy': avg_relative_accuracy
                 }
                 all_stats.append(stats)
     
-    # 打印统计汇总
+    # 分别统计训练集和测试集的准确度
     if all_stats:
+        try:
+            train_stocks = set(get_train_stocks())
+            test_stocks = set(get_test_stocks())
+        except Exception as e:
+            logger.warning(f"无法获取训练集/测试集列表: {e}")
+            train_stocks = set()
+            test_stocks = set()
+        
+        train_stats = [s for s in all_stats if s['stock_code'] in train_stocks]
+        test_stats = [s for s in all_stats if s['stock_code'] in test_stocks]
+        
         logger.info("\n" + "=" * 80)
-        logger.info("预测统计汇总")
+        logger.info("准确度统计")
         logger.info("=" * 80)
-        logger.info(f"{'股票代码':<12} {'预测数':<8} {'MAE':<12} {'MAPE (%)':<12} {'RMSE':<12}")
-        logger.info("-" * 80)
         
-        for stats in all_stats:
-            logger.info(
-                f"{stats['stock_code']:<12} {stats['predictions']:<8} "
-                f"${stats['mae']:<11.2f} {stats['mape']:<11.2f} ${stats['rmse']:<11.2f}"
-            )
+        # 训练集统计
+        if train_stats:
+            logger.info(f"\n训练集统计 ({len(train_stats)} 支股票):")
+            logger.info(f"{'股票代码':<12} {'预测数':<8} {'train_direction_accuracy (%)':<25} {'train_relative_accuracy (%)':<25}")
+            logger.info("-" * 80)
+            for stats in train_stats:
+                logger.info(
+                    f"{stats['stock_code']:<12} {stats['predictions']:<8} "
+                    f"{stats['direction_accuracy']:<25.2f} {stats['relative_accuracy']:<25.2f}"
+                )
+            avg_train_direction = np.mean([s['direction_accuracy'] for s in train_stats])
+            avg_train_relative = np.mean([s['relative_accuracy'] for s in train_stats])
+            logger.info("-" * 80)
+            logger.info(f"{'平均':<12} {'':<8} {avg_train_direction:<25.2f} {avg_train_relative:<25.2f}")
         
-        # 总体统计
-        avg_mae = np.mean([s['mae'] for s in all_stats])
-        avg_mape = np.mean([s['mape'] for s in all_stats])
-        avg_rmse = np.mean([s['rmse'] for s in all_stats])
+        # 测试集统计
+        if test_stats:
+            logger.info(f"\n测试集统计 ({len(test_stats)} 支股票):")
+            logger.info(f"{'股票代码':<12} {'预测数':<8} {'test_direction_accuracy (%)':<25} {'test_relative_accuracy (%)':<25}")
+            logger.info("-" * 80)
+            for stats in test_stats:
+                logger.info(
+                    f"{stats['stock_code']:<12} {stats['predictions']:<8} "
+                    f"{stats['direction_accuracy']:<25.2f} {stats['relative_accuracy']:<25.2f}"
+                )
+            avg_test_direction = np.mean([s['direction_accuracy'] for s in test_stats])
+            avg_test_relative = np.mean([s['relative_accuracy'] for s in test_stats])
+            logger.info("-" * 80)
+            logger.info(f"{'平均':<12} {'':<8} {avg_test_direction:<25.2f} {avg_test_relative:<25.2f}")
         
-        logger.info("-" * 80)
-        logger.info(f"{'平均':<12} {'':<8} ${avg_mae:<11.2f} {avg_mape:<11.2f} ${avg_rmse:<11.2f}")
         logger.info("=" * 80)
     
     logger.info(f"\n可视化完成！共处理 {len(stocks)} 支股票")

@@ -1,94 +1,29 @@
 # LSTM 模型配置文件
 # 用于训练和回测的股票分组配置
-
-# 所有可用的股票列表（共20支）
 [stocks]
-all = [
-    "AAPL.O",   # Apple Inc.
-    "AMZN.O",   # Amazon.com Inc.
-    "ASML.O",   # ASML Holding
-    "AVGO.O",   # Broadcom Inc.
-    "COST.O",   # Costco Wholesale Corporation
-    "CSCO.O",   # Cisco Systems, Inc.
-    "EBAY.O",   # eBay Inc.
-    "ENPH.O",   # Enphase Energy, Inc.
-    "FAST.O",   # Fastenal Company
-    "GOOGL.O",  # Alphabet Inc. (Google)
-    "JD.O",     # JD.com, Inc.
-    "META.O",   # Meta Platforms Inc. (Facebook)
-    "MRNA.O",   # Moderna, Inc.
-    "MSFT.O",   # Microsoft Corporation
-    "NFLX.O",   # Netflix, Inc.
-    "NVDA.O",   # NVIDIA Corporation
-    "PDD.O",   # Pinduoduo Inc.
-    "PYPL.O",   # PayPal Holdings, Inc.
-    "TMUS.O",   # T-Mobile US, Inc.
-    "TSLA.O",   # Tesla, Inc.
-]
+all = ["AAPL.O","AMZN.O","ASML.O","AVGO.O","COST.O","CSCO.O","EBAY.O","ENPH.O","FAST.O","GOOGL.O","JD.O","META.O","MRNA.O","MSFT.O","NFLX.O","NVDA.O","PDD.O","PYPL.O","TMUS.O","TSLA.O"]
 
-# 训练集：用于训练 LSTM 模型的10支股票
 [train]
-stocks = [
-    "AAPL.O",   # Apple Inc.
-    "MSFT.O",   # Microsoft Corporation
-    "GOOGL.O",  # Alphabet Inc. (Google)
-    "AMZN.O",   # Amazon.com Inc.
-    "NVDA.O",   # NVIDIA Corporation
-    "META.O",   # Meta Platforms Inc. (Facebook)
-    "TSLA.O",   # Tesla, Inc.
-    "AVGO.O",   # Broadcom Inc.
-    "COST.O",   # Costco Wholesale Corporation
-    "CSCO.O",   # Cisco Systems, Inc.
-]
+stocks = ["AAPL.O","MSFT.O","GOOGL.O","AMZN.O","NVDA.O","META.O","TSLA.O","AVGO.O","COST.O","CSCO.O"]
 
-# 测试集：用于回测的10支股票
 [test]
-stocks = [
-    "ASML.O",   # ASML Holding
-    "EBAY.O",   # eBay Inc.
-    "ENPH.O",   # Enphase Energy, Inc.
-    "FAST.O",   # Fastenal Company
-    "JD.O",     # JD.com, Inc.
-    "MRNA.O",   # Moderna, Inc.
-    "NFLX.O",   # Netflix, Inc.
-    "PDD.O",    # Pinduoduo Inc.
-    "PYPL.O",   # PayPal Holdings, Inc.
-    "TMUS.O",   # T-Mobile US, Inc.
-]
+stocks = ["ASML.O","EBAY.O","ENPH.O","FAST.O","JD.O","MRNA.O","NFLX.O","PDD.O","PYPL.O","TMUS.O"]
 
-# 模型超参数配置
 [model]
-# LSTM 隐藏层大小
 hidden_size = 64
-# LSTM 层数
 num_layers = 2
-# Dropout 比例
 dropout = 0.2
-# 序列长度（天数）
 seq_len = 21
-# 输入特征数量（会根据实际特征自动调整）
 input_size = 15
 
-# 训练参数配置
 [training]
-# 训练轮数
 epochs = 50
-# 批次大小
 batch_size = 32
-# 学习率
 learning_rate = 0.001
-# 验证集比例
 validation_split = 0.2
-# 是否打印训练过程
 verbose = true
 
-# 数据配置
 [data]
-# 使用的特征列表（如果为空则使用默认特征）
-# 默认特征包括：close_price, open_price, high_price, low_price, volume, prev_close,
-# ret_1d, ret_5d, ret_20d, range_pct, gap_pct, close_to_open, vol_20d, vol_60d, vol_z_20d
 feature_names = []
-
-# 数据日期范围（可选，如果为空则使用所有可用数据）
 start_date = ""
 end_date = ""
