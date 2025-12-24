@@ -4,10 +4,10 @@
 all = ["AAPL.O","AMZN.O","ASML.O","AVGO.O","COST.O","CSCO.O","EBAY.O","ENPH.O","FAST.O","GOOGL.O","JD.O","META.O","MRNA.O","MSFT.O","NFLX.O","NVDA.O","PDD.O","PYPL.O","TMUS.O","TSLA.O"]
 
 [train]
-stocks = ["AAPL.O","MSFT.O","GOOGL.O","AMZN.O","NVDA.O","META.O","TSLA.O","AVGO.O","COST.O","CSCO.O"]
+stocks = ["ASML.O","EBAY.O","ENPH.O","FAST.O","JD.O","MRNA.O","NFLX.O","PDD.O","PYPL.O","TMUS.O"]
 
 [test]
-stocks = ["ASML.O","EBAY.O","ENPH.O","FAST.O","JD.O","MRNA.O","NFLX.O","PDD.O","PYPL.O","TMUS.O"]
+stocks = ["AAPL.O","MSFT.O","GOOGL.O","AMZN.O","NVDA.O","META.O","TSLA.O","AVGO.O","COST.O","CSCO.O"]
 
 [model]
 hidden_size = 64

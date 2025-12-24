@@ -300,7 +300,8 @@ def plot_predictions(
     prediction_dates: List[str],
     output_dir: Optional[Path] = None,
     figsize: tuple = (14, 8),
-    dpi: int = 150
+    dpi: int = 150,
+    prefix: str = ""
 ):
     """
     绘制预测结果图表
@@ -391,9 +392,11 @@ def plot_predictions(
     if output_dir:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_file = output_dir / f'{stock_code.replace(".", "_")}_predictions.png'
+        filename = f'{stock_code.replace(".", "_")}_predictions.png'
+        if prefix:
+            filename = f'{prefix}_{filename}'
+        output_file = output_dir / filename
         plt.savefig(output_file, dpi=dpi, bbox_inches='tight', facecolor='white')
-        logger.info(f"保存图表到: {output_file}")
         plt.close()
     else:
         plt.show()
@@ -416,137 +419,94 @@ def visualize_all_stocks(
         figsize: 图表大小
         dpi: 图表分辨率
     """
-    if stocks is None:
-        stocks = get_trained_stocks()
+    # 获取训练集和测试集列表
+    try:
+        train_stocks_list = get_train_stocks()
+        test_stocks_list = get_test_stocks()
+    except Exception as e:
+        logger.warning(f"无法获取训练集/测试集列表: {e}")
+        train_stocks_list = []
+        test_stocks_list = []
     
-    if not stocks:
-        logger.error("没有找到已训练的模型")
+    # 如果用户指定了股票列表，只处理指定的股票
+    if stocks is not None:
+        stocks_set = set(stocks)
+        train_stocks_list = [s for s in train_stocks_list if s in stocks_set]
+        test_stocks_list = [s for s in test_stocks_list if s in stocks_set]
+    
+    # 合并所有需要处理的股票
+    all_stocks_to_process = train_stocks_list + test_stocks_list
+    
+    if not all_stocks_to_process:
+        logger.error("没有找到需要处理的股票")
         return
     
-    logger.info(f"评估 {len(stocks)} 支股票的预测结果...")
+    logger.info(f"评估 {len(all_stocks_to_process)} 支股票的预测结果...")
+    logger.info(f"训练集: {len(train_stocks_list)} 支, 测试集: {len(test_stocks_list)} 支")
     
-    # 统计信息
-    all_stats = []
+    # 分别处理训练集和测试集
+    train_stats = []
+    test_stats = []
     
-    for i, stock_code in enumerate(stocks, 1):
-        # 加载预测器
-        predictor = load_predictor(stock_code)
-        if predictor is None:
-            continue
-        
-        # 生成预测用于保存图片
-        data, predictions, prediction_dates = generate_predictions(
-            stock_code, predictor, lookback_days=lookback_days
-        )
-        
-        # 保存图片
-        if predictions and output_dir:
-            plot_predictions(
-                stock_code, data, predictions, prediction_dates,
-                output_dir=output_dir, figsize=figsize, dpi=dpi
-            )
-        
-        # 使用新的评估模块计算三层评估指标
-        try:
-            eval_results = evaluate_predictor(
-                stock_code=stock_code,
-                predictor=predictor,
-                lookback_days=lookback_days
+    def process_stocks(stock_list, prefix_name):
+        """处理股票列表并返回统计信息"""
+        stats_list = []
+        for stock_code in stock_list:
+            
+            # 加载预测器
+            predictor = load_predictor(stock_code)
+            if predictor is None:
+                continue
+            
+            # 生成预测用于保存图片
+            data, predictions, prediction_dates = generate_predictions(
+                stock_code, predictor, lookback_days=lookback_days
             )
             
-            if eval_results:
-                stats = {
-                    'stock_code': stock_code,
-                    'predictions': eval_results.get('n_predictions', 0),
-                    'direction_accuracy': eval_results.get('direction_accuracy', 0) * 100,
-                    'ic': eval_results.get('ic', 0),
-                    'rank_ic': eval_results.get('rank_ic', 0),
-                    'strategy_annualized_return': eval_results.get('strategy', {}).get('annualized_return', 0) * 100,
-                    'strategy_sharpe': eval_results.get('strategy', {}).get('sharpe_ratio', 0),
-                    'baseline_naive_price_direction': eval_results.get('baseline_naive_price', {}).get('direction_accuracy', 0) * 100,
-                    'baseline_naive_return_direction': eval_results.get('baseline_naive_return', {}).get('direction_accuracy', 0) * 100,
-                    'baseline_naive_price_return': eval_results.get('baseline_naive_price', {}).get('annualized_return', 0) * 100,
-                    'baseline_naive_return_return': eval_results.get('baseline_naive_return', {}).get('annualized_return', 0) * 100,
-                }
-                all_stats.append(stats)
-        except Exception as e:
-            logger.warning(f"评估股票 {stock_code} 时出错: {e}")
-            continue
+            # 保存图片（带前缀）
+            if predictions and output_dir:
+                plot_predictions(
+                    stock_code, data, predictions, prediction_dates,
+                    output_dir=output_dir, figsize=figsize, dpi=dpi,
+                    prefix=prefix_name
+                )
+            
+            # 使用新的评估模块计算三层评估指标
+            try:
+                eval_results = evaluate_predictor(
+                    stock_code=stock_code,
+                    predictor=predictor,
+                    lookback_days=lookback_days
+                )
+                
+                if eval_results:
+                    stats = {
+                        'stock_code': stock_code,
+                        'predictions': eval_results.get('n_predictions', 0),
+                        'direction_accuracy': eval_results.get('direction_accuracy', 0) * 100,
+                        'ic': eval_results.get('ic', 0),
+                        'rank_ic': eval_results.get('rank_ic', 0),
+                        'strategy_annualized_return': eval_results.get('strategy', {}).get('annualized_return', 0) * 100,
+                        'strategy_sharpe': eval_results.get('strategy', {}).get('sharpe_ratio', 0),
+                        'baseline_naive_price_direction': eval_results.get('baseline_naive_price', {}).get('direction_accuracy', 0) * 100,
+                        'baseline_naive_return_direction': eval_results.get('baseline_naive_return', {}).get('direction_accuracy', 0) * 100,
+                        'baseline_naive_price_return': eval_results.get('baseline_naive_price', {}).get('annualized_return', 0) * 100,
+                        'baseline_naive_return_return': eval_results.get('baseline_naive_return', {}).get('annualized_return', 0) * 100,
+                    }
+                    stats_list.append(stats)
+            except Exception as e:
+                logger.warning(f"评估股票 {stock_code} 时出错: {e}")
+                continue
+        
+        return stats_list
     
-    # 分别统计训练集和测试集的准确度
-    if all_stats:
-        try:
-            train_stocks = set(get_train_stocks())
-            test_stocks = set(get_test_stocks())
-        except Exception as e:
-            logger.warning(f"无法获取训练集/测试集列表: {e}")
-            train_stocks = set()
-            test_stocks = set()
-        
-        train_stats = [s for s in all_stats if s['stock_code'] in train_stocks]
-        test_stats = [s for s in all_stats if s['stock_code'] in test_stocks]
-        
-        logger.info("\n关键指标汇总")
-        
-        # 只显示测试集的平均值汇总（关键指标）
-        if test_stats:
-            avg_direction = np.mean([s['direction_accuracy'] for s in test_stats])
-            avg_ic = np.mean([s['ic'] for s in test_stats])
-            avg_rank_ic = np.mean([s['rank_ic'] for s in test_stats])
-            avg_strategy_return = np.mean([s['strategy_annualized_return'] for s in test_stats])
-            avg_baseline_price = np.mean([s['baseline_naive_price_return'] for s in test_stats])
-            avg_baseline_return = np.mean([s['baseline_naive_return_return'] for s in test_stats])
-            
-            # 只显示正数或关键指标
-            summary_data = []
-            
-            # 方向准确率（总是显示）
-            summary_data.append({
-                '指标': '方向准确率',
-                '值': f"{avg_direction:.2f}%"
-            })
-            
-            # IC（如果为正或接近0）
-            if avg_ic > -0.01:
-                summary_data.append({
-                    '指标': 'IC',
-                    '值': f"{avg_ic:.4f}"
-                })
-            
-            # Rank IC（如果为正或接近0）
-            if avg_rank_ic > -0.01:
-                summary_data.append({
-                    '指标': 'Rank IC',
-                    '值': f"{avg_rank_ic:.4f}"
-                })
-            
-            # 策略收益（如果为正）
-            if avg_strategy_return > 0:
-                summary_data.append({
-                    '指标': '策略年化收益',
-                    '值': f"{avg_strategy_return:.2f}%"
-                })
-            
-            # 基线对比（如果策略收益为正，显示基线对比）
-            if avg_strategy_return > 0:
-                if avg_baseline_price > 0:
-                    summary_data.append({
-                        '指标': '基线-Price收益',
-                        '值': f"{avg_baseline_price:.2f}%"
-                    })
-                if avg_baseline_return > 0:
-                    summary_data.append({
-                        '指标': '基线-Return收益',
-                        '值': f"{avg_baseline_return:.2f}%"
-                    })
-            
-            if summary_data:
-                df_summary = pd.DataFrame(summary_data)
-                logger.info("\n" + df_summary.to_string(index=False))
-            else:
-                logger.info("\n所有关键指标均为负值，模型表现不佳")
+    # 处理训练集
+    if train_stocks_list:
+        train_stats = process_stocks(train_stocks_list, 'train')
     
-    logger.info(f"\n评估完成！共处理 {len(stocks)} 支股票")
+    # 处理测试集
+    if test_stocks_list:
+        test_stats = process_stocks(test_stocks_list, 'test')
 
 
 def main():
