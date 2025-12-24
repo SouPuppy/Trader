@@ -102,12 +102,12 @@ def load_stock_data(stock_code: str, start_date: Optional[str] = None,
         return pd.DataFrame()
 
 
-def create_sequences_from_data(data: pd.DataFrame, seq_len: int = 21, use_returns: bool = True):
+def create_sequences_from_data(data: pd.DataFrame, seq_len: int = 21, use_log_returns: bool = True):
     """
     从数据创建序列（前21天预测后1天）
     
-    如果 use_returns=True，使用收益率（相对变化）而不是绝对价格
-    这样可以避免不同股票价格水平差异的问题
+    如果 use_log_returns=True，使用对数收益率 log(close_{t+1}/close_t)
+    这样可以避免不同股票价格水平差异的问题，并且更符合金融建模习惯
     """
     # 确保数据按日期排序
     if isinstance(data.index, pd.DatetimeIndex):
@@ -119,21 +119,21 @@ def create_sequences_from_data(data: pd.DataFrame, seq_len: int = 21, use_return
     
     close_prices = data['close_price'].values
     
-    if use_returns:
-        # 计算收益率：(price_t - price_{t-1}) / price_{t-1}
-        # 为了避免除零，使用价格变化率
-        returns = np.diff(close_prices) / (close_prices[:-1] + 1e-8)
-        # 第一个价格作为基准，后续都是收益率
+    if use_log_returns:
+        # 计算对数收益率：log(close_t / close_{t-1}) = log(1 + return)
+        # 使用 log 可以更好地处理不同价格水平，并且对极端值更稳健
+        log_returns = np.diff(np.log(close_prices + 1e-8))
+        # 第一个价格作为基准，后续都是对数收益率
         sequences = []
         targets = []
         
-        # 需要 seq_len+1 个价格点来创建 seq_len 个收益率序列
+        # 需要 seq_len+1 个价格点来创建 seq_len 个对数收益率序列
         for i in range(seq_len + 1, len(close_prices)):
-            # 提取收益率序列
-            seq_returns = returns[i - seq_len - 1:i - 1]
-            sequences.append(seq_returns)
-            # 目标值是下一天的收益率
-            targets.append(returns[i - 1])
+            # 提取对数收益率序列
+            seq_log_returns = log_returns[i - seq_len - 1:i - 1]
+            sequences.append(seq_log_returns)
+            # 目标值是下一天的对数收益率 log(close_{t+1}/close_t)
+            targets.append(log_returns[i - 1])
         
         return np.array(sequences), np.array(targets)
     else:
@@ -168,10 +168,10 @@ def train_shared_model(
         use_close_only=True  # 只用 close_price
     )
     
-    # 使用收益率模式（推荐用于多股票训练）
-    # 这样可以避免不同股票价格水平差异的问题
-    use_returns = True
-    logger.info(f"使用收益率模式: {use_returns}（避免不同股票价格水平差异问题）")
+    # 使用对数收益率模式（推荐用于多股票训练）
+    # log(close_{t+1}/close_t) 可以避免不同股票价格水平差异，并且更稳健
+    use_log_returns = True
+    logger.info(f"使用对数收益率模式: {use_log_returns}（目标: log(close_{{t+1}}/close_t)）")
     
     # 加载所有股票的数据并创建序列
     start_date = data_config.get('start_date') or None
@@ -199,8 +199,8 @@ def train_shared_model(
         elif not isinstance(data.index, pd.DatetimeIndex):
             data = data.sort_index()
         
-        # 创建序列（使用收益率）
-        sequences, targets = create_sequences_from_data(data, predictor.seq_len, use_returns=use_returns)
+        # 创建序列（使用对数收益率）
+        sequences, targets = create_sequences_from_data(data, predictor.seq_len, use_log_returns=use_log_returns)
         
         if len(sequences) > 0:
             all_sequences.append(sequences)
@@ -232,8 +232,8 @@ def train_shared_model(
     predictor.scaler_y = StandardScaler()
     y_scaled = predictor.scaler_y.fit_transform(y_all.reshape(-1, 1)).flatten()
     
-    # 保存使用收益率的标志
-    predictor.use_returns = use_returns
+    # 保存使用对数收益率的标志
+    predictor.use_log_returns = use_log_returns
     
     # 分割训练集和验证集
     validation_split = training_config.get('validation_split', 0.2)
@@ -270,9 +270,21 @@ def train_shared_model(
     train_loader = DataLoader(train_dataset, batch_size=training_config.get('batch_size', 32), shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=training_config.get('batch_size', 32), shuffle=False)
     
-    # 优化器和损失函数
-    optimizer = optim.Adam(predictor.model.parameters(), lr=training_config.get('learning_rate', 0.001))
-    criterion = nn.MSELoss()
+    # 优化器：使用 AdamW（带权重衰减）
+    learning_rate = training_config.get('learning_rate', 0.001)
+    weight_decay = training_config.get('weight_decay', 1e-4)
+    optimizer = optim.AdamW(
+        predictor.model.parameters(), 
+        lr=learning_rate,
+        weight_decay=weight_decay
+    )
+    
+    # 损失函数：使用 HuberLoss（对极端值更稳健）
+    # delta=1.0 是默认值，可以根据需要调整
+    criterion = nn.HuberLoss(delta=training_config.get('huber_delta', 1.0))
+    
+    logger.info(f"优化器: AdamW (lr={learning_rate}, weight_decay={weight_decay})")
+    logger.info(f"损失函数: HuberLoss (delta={training_config.get('huber_delta', 1.0)})")
     
     # 初始化 wandb
     if use_wandb:
@@ -336,10 +348,18 @@ def train_shared_model(
             logger.warning("安装命令: poetry add wandb")
             use_wandb = False
     
-    # 训练循环
+    # 训练循环（带早停）
     epochs = training_config.get('epochs', 50)
     verbose = training_config.get('verbose', True)
+    patience = training_config.get('early_stopping_patience', 10)
+    min_delta = training_config.get('early_stopping_min_delta', 1e-6)
+    gradient_clip = training_config.get('gradient_clip', 1.0)
+    
     best_val_loss = float('inf')
+    patience_counter = 0
+    
+    logger.info(f"早停设置: patience={patience}, min_delta={min_delta}")
+    logger.info(f"梯度裁剪: clip_norm={gradient_clip}")
     
     for epoch in range(epochs):
         # 训练阶段
@@ -350,6 +370,11 @@ def train_shared_model(
             outputs = predictor.model(batch_X)
             loss = criterion(outputs.squeeze(), batch_y)
             loss.backward()
+            
+            # 梯度裁剪
+            if gradient_clip > 0:
+                torch.nn.utils.clip_grad_norm_(predictor.model.parameters(), gradient_clip)
+            
             optimizer.step()
             train_loss += loss.item()
         
@@ -378,16 +403,27 @@ def train_shared_model(
             except:
                 pass
         
-        # 保存最佳模型
-        if val_loss < best_val_loss:
+        # 早停检查
+        if val_loss < best_val_loss - min_delta:
             best_val_loss = val_loss
+            patience_counter = 0
             predictor.save_model()
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                logger.info(
+                    f"早停触发: 验证损失在 {patience} 个 epoch 内未改善 "
+                    f"(最佳: {best_val_loss:.6f}, 当前: {val_loss:.6f})"
+                )
+                break
         
         if verbose and (epoch + 1) % 10 == 0:
             logger.info(
                 f"Epoch [{epoch+1}/{epochs}], "
                 f"Train Loss: {train_loss:.6f}, "
-                f"Val Loss: {val_loss:.6f}"
+                f"Val Loss: {val_loss:.6f}, "
+                f"Best Val Loss: {best_val_loss:.6f}, "
+                f"Patience: {patience_counter}/{patience}"
             )
     
     predictor.is_trained = True

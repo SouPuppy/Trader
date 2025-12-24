@@ -892,21 +892,21 @@ class Predictor:
             if close_prices is None:
                 raise ValueError("use_close_only=True 时，必须提供 close_prices 参数")
             
-            # 检查是否使用收益率模式
-            use_returns = getattr(self, 'use_returns', False)
+            # 检查是否使用对数收益率模式
+            use_log_returns = getattr(self, 'use_log_returns', False)
             
-            if use_returns:
-                # 使用收益率模式：需要 seq_len+1 个价格点来创建 seq_len 个收益率
+            if use_log_returns:
+                # 使用对数收益率模式：需要 seq_len+1 个价格点来创建 seq_len 个对数收益率
                 if len(close_prices) < self.seq_len + 1:
                     raise ValueError(
-                        f"收益率模式需要至少 {self.seq_len + 1} 天的数据，"
+                        f"对数收益率模式需要至少 {self.seq_len + 1} 天的数据，"
                         f"当前只有 {len(close_prices)} 天"
                     )
                 
-                # 计算收益率序列
-                returns = np.diff(close_prices) / (close_prices[:-1] + 1e-8)
-                # 提取最后 seq_len 个收益率
-                X = returns[-self.seq_len:].reshape(-1, 1)
+                # 计算对数收益率序列 log(close_t / close_{t-1})
+                log_returns = np.diff(np.log(close_prices + 1e-8))
+                # 提取最后 seq_len 个对数收益率
+                X = log_returns[-self.seq_len:].reshape(-1, 1)
             else:
                 # 使用绝对价格模式
                 if len(close_prices) < self.seq_len:
@@ -970,18 +970,19 @@ class Predictor:
         # 反标准化
         prediction_scaled_value = self.scaler_y.inverse_transform([[prediction_scaled]])[0][0]
         
-        # 如果使用收益率模式，需要转换回价格
-        use_returns = getattr(self, 'use_returns', False)
-        if use_returns and self.use_close_only:
-            # 预测的是收益率，需要转换为价格
+        # 如果使用对数收益率模式，需要转换回价格
+        use_log_returns = getattr(self, 'use_log_returns', False)
+        if use_log_returns and self.use_close_only:
+            # 预测的是对数收益率 log(close_{t+1}/close_t)，需要转换为价格
             # 需要最后一天的价格作为基准
             if close_prices is not None and len(close_prices) > 0:
                 last_price = close_prices[-1]
-                # prediction_scaled_value 是收益率，转换为价格
-                prediction = last_price * (1 + prediction_scaled_value)
+                # prediction_scaled_value 是对数收益率，转换为价格
+                # price_{t+1} = price_t * exp(log_return)
+                prediction = last_price * np.exp(prediction_scaled_value)
             else:
-                # 如果没有提供价格，返回收益率（不推荐）
-                logger.warning("收益率模式下无法转换回价格，返回收益率")
+                # 如果没有提供价格，返回对数收益率（不推荐）
+                logger.warning("对数收益率模式下无法转换回价格，返回对数收益率")
                 prediction = prediction_scaled_value
         else:
             prediction = prediction_scaled_value
@@ -1005,7 +1006,7 @@ class Predictor:
             'dropout': self.dropout,
             'seq_len': self.seq_len,
             'use_close_only': self.use_close_only,
-            'use_returns': getattr(self, 'use_returns', False)
+            'use_log_returns': getattr(self, 'use_log_returns', False)
         }
         with open(self.scaler_path, 'wb') as f:
             pickle.dump(scaler_data, f)
@@ -1032,7 +1033,7 @@ class Predictor:
         self.dropout = scaler_data['dropout']
         self.seq_len = scaler_data['seq_len']
         self.use_close_only = scaler_data.get('use_close_only', False)
-        self.use_returns = scaler_data.get('use_returns', False)
+        self.use_log_returns = scaler_data.get('use_log_returns', False)
         
         # 重新初始化模型
         self.model = LSTMPredictor(

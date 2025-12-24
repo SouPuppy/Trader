@@ -20,6 +20,7 @@ from trader.predictor.Predictor import Predictor
 from trader.backtest.market import Market
 from trader.logger import get_logger
 from trader.predictor.config_loader import get_train_stocks, get_test_stocks
+from trader.predictor.evaluate import evaluate_predictor
 
 logger = get_logger(__name__)
 
@@ -132,14 +133,14 @@ def prepare_features_for_prediction(data: pd.DataFrame) -> pd.DataFrame:
     elif not isinstance(data.index, pd.DatetimeIndex):
         data = data.sort_index()
     
-    # 计算收益率特征
+    # 计算对数收益率特征（使用 log 更稳健，且与训练目标一致）
     if 'prev_close' in data.columns:
-        data['ret_1d'] = data['close_price'] / data['prev_close'] - 1
+        data['ret_1d'] = np.log(data['close_price'] / (data['prev_close'] + 1e-8))
     else:
-        data['ret_1d'] = data['close_price'].pct_change()
+        data['ret_1d'] = np.log(data['close_price'] / (data['close_price'].shift(1) + 1e-8))
     
-    data['ret_5d'] = data['close_price'].pct_change(5)
-    data['ret_20d'] = data['close_price'].pct_change(20)
+    data['ret_5d'] = np.log(data['close_price'] / (data['close_price'].shift(5) + 1e-8))
+    data['ret_20d'] = np.log(data['close_price'] / (data['close_price'].shift(20) + 1e-8))
     
     # 计算日内特征
     if 'prev_close' in data.columns:
@@ -227,17 +228,44 @@ def generate_predictions(
     predictions = []
     prediction_dates = []
     
-    # 检查是否使用收益率模式
-    use_returns = getattr(predictor, 'use_returns', False)
+    # 检查是否使用对数收益率模式
+    use_log_returns = getattr(predictor, 'use_log_returns', False)
     
-    # 从 seq_len 天之后开始预测（如果使用收益率模式，需要 seq_len+1 天）
-    start_idx = predictor.seq_len + 1 if use_returns else predictor.seq_len
+    # 从 seq_len 天之后开始预测（如果使用对数收益率模式，需要 seq_len+1 天）
+    start_idx = predictor.seq_len + 1 if use_log_returns else predictor.seq_len
+    
+    # 确保有足够的数据
+    if len(close_prices) < start_idx + 1:
+        logger.warning(f"股票 {stock_code} 数据不足，需要至少 {start_idx + 1} 天，当前只有 {len(close_prices)} 天")
+        return data, [], []
+    
     for i in range(start_idx, min(len(data), start_idx + lookback_days)):
         try:
             # 获取前 seq_len 天的 close_price 用于预测
-            # 如果使用收益率模式，需要 seq_len+1 个价格点
-            window_size = predictor.seq_len + 1 if use_returns else predictor.seq_len
-            window_close_prices = close_prices[i - window_size:i]
+            # 如果使用对数收益率模式，需要 seq_len+1 个价格点
+            window_size = predictor.seq_len + 1 if use_log_returns else predictor.seq_len
+            
+            # 计算窗口起始索引：需要从 i 往前取 window_size 个点
+            window_start = i - window_size
+            
+            # 检查窗口起始索引是否有效
+            if window_start < 0:
+                logger.warning(
+                    f"股票 {stock_code} 第 {i} 天：窗口起始索引无效，"
+                    f"需要从 {window_start} 开始，但数据从 0 开始"
+                )
+                continue
+            
+            # 获取窗口数据（包含 window_start 到 i-1，共 window_size 个点）
+            window_close_prices = close_prices[window_start:i]
+            
+            # 验证窗口大小
+            if len(window_close_prices) != window_size:
+                logger.warning(
+                    f"股票 {stock_code} 第 {i} 天：窗口数据大小不匹配，"
+                    f"需要 {window_size} 天，当前只有 {len(window_close_prices)} 天"
+                )
+                continue
             
             # 预测下一天的价格
             if predictor.use_close_only:
@@ -395,85 +423,55 @@ def visualize_all_stocks(
         logger.error("没有找到已训练的模型")
         return
     
-    logger.info(f"开始可视化 {len(stocks)} 支股票的预测结果")
-    logger.info(f"股票列表: {', '.join(stocks)}")
+    logger.info(f"评估 {len(stocks)} 支股票的预测结果...")
     
     # 统计信息
     all_stats = []
     
     for i, stock_code in enumerate(stocks, 1):
-        logger.info(f"\n[{i}/{len(stocks)}] 处理股票: {stock_code}")
-        logger.info("-" * 80)
-        
         # 加载预测器
         predictor = load_predictor(stock_code)
         if predictor is None:
-            logger.warning(f"跳过股票 {stock_code}：无法加载模型")
             continue
         
-        # 生成预测
+        # 生成预测用于保存图片
         data, predictions, prediction_dates = generate_predictions(
             stock_code, predictor, lookback_days=lookback_days
         )
         
-        if not predictions:
-            logger.warning(f"跳过股票 {stock_code}：没有生成预测")
-            continue
+        # 保存图片
+        if predictions and output_dir:
+            plot_predictions(
+                stock_code, data, predictions, prediction_dates,
+                output_dir=output_dir, figsize=figsize, dpi=dpi
+            )
         
-        # 绘制图表
-        plot_predictions(
-            stock_code, data, predictions, prediction_dates,
-            output_dir=output_dir, figsize=figsize, dpi=dpi
-        )
-        
-        # 计算统计信息
-        if data is not None and not data.empty and predictions:
-            # 获取实际价格
-            actual_prices = []
-            for date_str in prediction_dates:
-                date = pd.to_datetime(date_str)
-                if date in data.index:
-                    actual_prices.append(data.loc[date, 'close_price'])
-                else:
-                    closest_idx = data.index.get_indexer([date], method='nearest')[0]
-                    if closest_idx >= 0:
-                        actual_prices.append(data.iloc[closest_idx]['close_price'])
-                    else:
-                        actual_prices.append(np.nan)
+        # 使用新的评估模块计算三层评估指标
+        try:
+            eval_results = evaluate_predictor(
+                stock_code=stock_code,
+                predictor=predictor,
+                lookback_days=lookback_days
+            )
             
-            # 计算准确度
-            valid_pairs = [(p, a) for p, a in zip(predictions, actual_prices) if not np.isnan(a)]
-            if valid_pairs:
-                # 计算方向准确度（预测涨跌方向是否正确）
-                direction_correct = 0
-                # 计算相对准确度（1 - 平均相对误差）
-                relative_errors = []
-                
-                for i in range(1, len(valid_pairs)):
-                    pred_prev, actual_prev = valid_pairs[i-1]
-                    pred_curr, actual_curr = valid_pairs[i]
-                    
-                    # 方向准确度：预测的变化方向是否与实际一致
-                    pred_direction = 1 if pred_curr > pred_prev else -1
-                    actual_direction = 1 if actual_curr > actual_prev else -1
-                    if pred_direction == actual_direction:
-                        direction_correct += 1
-                    
-                    # 相对准确度：1 - |pred - actual| / actual
-                    if actual_curr > 0:
-                        relative_error = abs(pred_curr - actual_curr) / actual_curr
-                        relative_errors.append(relative_error)
-                
-                direction_accuracy = direction_correct / (len(valid_pairs) - 1) * 100 if len(valid_pairs) > 1 else 0
-                avg_relative_accuracy = (1 - np.mean(relative_errors)) * 100 if relative_errors else 0
-                
+            if eval_results:
                 stats = {
                     'stock_code': stock_code,
-                    'predictions': len(valid_pairs),
-                    'direction_accuracy': direction_accuracy,
-                    'relative_accuracy': avg_relative_accuracy
+                    'predictions': eval_results.get('n_predictions', 0),
+                    'direction_accuracy': eval_results.get('direction_accuracy', 0) * 100,
+                    'ic': eval_results.get('ic', 0),
+                    'rank_ic': eval_results.get('rank_ic', 0),
+                    'strategy_annualized_return': eval_results.get('strategy', {}).get('annualized_return', 0) * 100,
+                    'strategy_sharpe': eval_results.get('strategy', {}).get('sharpe_ratio', 0),
+                    'baseline_naive_price_direction': eval_results.get('baseline_naive_price', {}).get('direction_accuracy', 0) * 100,
+                    'baseline_naive_return_direction': eval_results.get('baseline_naive_return', {}).get('direction_accuracy', 0) * 100,
+                    'baseline_naive_price_return': eval_results.get('baseline_naive_price', {}).get('annualized_return', 0) * 100,
+                    'baseline_naive_return_return': eval_results.get('baseline_naive_return', {}).get('annualized_return', 0) * 100,
                 }
                 all_stats.append(stats)
+        except Exception as e:
+            logger.warning(f"评估股票 {stock_code} 时出错: {e}")
+            continue
     
     # 分别统计训练集和测试集的准确度
     if all_stats:
@@ -488,43 +486,67 @@ def visualize_all_stocks(
         train_stats = [s for s in all_stats if s['stock_code'] in train_stocks]
         test_stats = [s for s in all_stats if s['stock_code'] in test_stocks]
         
-        logger.info("\n" + "=" * 80)
-        logger.info("准确度统计")
-        logger.info("=" * 80)
+        logger.info("\n关键指标汇总")
         
-        # 训练集统计
-        if train_stats:
-            logger.info(f"\n训练集统计 ({len(train_stats)} 支股票):")
-            logger.info(f"{'股票代码':<12} {'预测数':<8} {'train_direction_accuracy (%)':<25} {'train_relative_accuracy (%)':<25}")
-            logger.info("-" * 80)
-            for stats in train_stats:
-                logger.info(
-                    f"{stats['stock_code']:<12} {stats['predictions']:<8} "
-                    f"{stats['direction_accuracy']:<25.2f} {stats['relative_accuracy']:<25.2f}"
-                )
-            avg_train_direction = np.mean([s['direction_accuracy'] for s in train_stats])
-            avg_train_relative = np.mean([s['relative_accuracy'] for s in train_stats])
-            logger.info("-" * 80)
-            logger.info(f"{'平均':<12} {'':<8} {avg_train_direction:<25.2f} {avg_train_relative:<25.2f}")
-        
-        # 测试集统计
+        # 只显示测试集的平均值汇总（关键指标）
         if test_stats:
-            logger.info(f"\n测试集统计 ({len(test_stats)} 支股票):")
-            logger.info(f"{'股票代码':<12} {'预测数':<8} {'test_direction_accuracy (%)':<25} {'test_relative_accuracy (%)':<25}")
-            logger.info("-" * 80)
-            for stats in test_stats:
-                logger.info(
-                    f"{stats['stock_code']:<12} {stats['predictions']:<8} "
-                    f"{stats['direction_accuracy']:<25.2f} {stats['relative_accuracy']:<25.2f}"
-                )
-            avg_test_direction = np.mean([s['direction_accuracy'] for s in test_stats])
-            avg_test_relative = np.mean([s['relative_accuracy'] for s in test_stats])
-            logger.info("-" * 80)
-            logger.info(f"{'平均':<12} {'':<8} {avg_test_direction:<25.2f} {avg_test_relative:<25.2f}")
-        
-        logger.info("=" * 80)
+            avg_direction = np.mean([s['direction_accuracy'] for s in test_stats])
+            avg_ic = np.mean([s['ic'] for s in test_stats])
+            avg_rank_ic = np.mean([s['rank_ic'] for s in test_stats])
+            avg_strategy_return = np.mean([s['strategy_annualized_return'] for s in test_stats])
+            avg_baseline_price = np.mean([s['baseline_naive_price_return'] for s in test_stats])
+            avg_baseline_return = np.mean([s['baseline_naive_return_return'] for s in test_stats])
+            
+            # 只显示正数或关键指标
+            summary_data = []
+            
+            # 方向准确率（总是显示）
+            summary_data.append({
+                '指标': '方向准确率',
+                '值': f"{avg_direction:.2f}%"
+            })
+            
+            # IC（如果为正或接近0）
+            if avg_ic > -0.01:
+                summary_data.append({
+                    '指标': 'IC',
+                    '值': f"{avg_ic:.4f}"
+                })
+            
+            # Rank IC（如果为正或接近0）
+            if avg_rank_ic > -0.01:
+                summary_data.append({
+                    '指标': 'Rank IC',
+                    '值': f"{avg_rank_ic:.4f}"
+                })
+            
+            # 策略收益（如果为正）
+            if avg_strategy_return > 0:
+                summary_data.append({
+                    '指标': '策略年化收益',
+                    '值': f"{avg_strategy_return:.2f}%"
+                })
+            
+            # 基线对比（如果策略收益为正，显示基线对比）
+            if avg_strategy_return > 0:
+                if avg_baseline_price > 0:
+                    summary_data.append({
+                        '指标': '基线-Price收益',
+                        '值': f"{avg_baseline_price:.2f}%"
+                    })
+                if avg_baseline_return > 0:
+                    summary_data.append({
+                        '指标': '基线-Return收益',
+                        '值': f"{avg_baseline_return:.2f}%"
+                    })
+            
+            if summary_data:
+                df_summary = pd.DataFrame(summary_data)
+                logger.info("\n" + df_summary.to_string(index=False))
+            else:
+                logger.info("\n所有关键指标均为负值，模型表现不佳")
     
-    logger.info(f"\n可视化完成！共处理 {len(stocks)} 支股票")
+    logger.info(f"\n评估完成！共处理 {len(stocks)} 支股票")
 
 
 def main():
