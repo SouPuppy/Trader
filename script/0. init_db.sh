@@ -23,10 +23,10 @@ poetry run python trader/cmd/db_init.py
 # 检查执行结果
 if [ $? -eq 0 ]; then
     echo ""
-    echo "😎 数据库初始化成功！"
+    echo "数据库初始化成功！"
     echo "数据库位置: $PROJECT_ROOT/data/data.sqlite3"
 else
     echo ""
-    echo "🤯 数据库初始化失败！"
+    echo "数据库初始化失败！"
     exit 1
 fi

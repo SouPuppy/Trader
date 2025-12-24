@@ -32,9 +32,9 @@ def test_engine_data_access():
     logger.info("\n测试1: 回测未开始时访问数据")
     try:
         engine.get_price(stock_code)
-        logger.error("❌ 应该抛出异常，但没有")
+        logger.error("应该抛出异常，但没有")
     except ValueError as e:
-        logger.info(f"✅ 正确抛出异常: {e}")
+        logger.info(f"正确抛出异常: {e}")
     
     # 测试2: 运行回测并测试数据访问
     logger.info("\n测试2: 运行回测并测试数据访问")
@@ -76,17 +76,17 @@ def test_engine_data_access():
             try:
                 future_date = "2099-12-31"
                 eng.get_price(stock_code, future_date)
-                logger.error("  ❌ 应该抛出异常，但没有")
+                logger.error("  应该抛出异常，但没有")
             except ValueError as e:
-                logger.info(f"  ✅ 正确阻止访问未来数据: {e}")
+                logger.info(f"  正确阻止访问未来数据: {e}")
             
             # 测试访问历史数据应该成功
             try:
                 # 访问当前日期应该成功
                 current_price = eng.get_price(stock_code, date)
-                logger.info(f"  ✅ 访问当前日期数据成功: {current_price:.2f}")
+                logger.info(f"  访问当前日期数据成功: {current_price:.2f}")
             except Exception as e:
-                logger.error(f"  ❌ 访问当前日期数据失败: {e}")
+                logger.error(f"  访问当前日期数据失败: {e}")
     
     engine.on_date(on_trading_day)
     

@@ -3,11 +3,13 @@
         "**/__pycache__": true,
         "**/*.pyc": true,
         "poetry.lock": true,
+        "wandb/": true,
     },
     "search.exclude": {
         "**/__pycache__": true,
         "**/*.pyc": true,
         "poetry.lock": true,
+        "wandb/": true,
     },
     "explorer.sortOrder": "type",
     "explorer.fileNesting.enabled": true,

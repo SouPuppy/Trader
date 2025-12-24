@@ -71,11 +71,11 @@ def check_news_data_table():
     table_exists = cursor.fetchone() is not None
     
     if not table_exists:
-        print("❌ news_data 表不存在！")
+        print("news_data 表不存在！")
         conn.close()
         return
     
-    print("✓ news_data 表存在")
+    print("news_data 表存在")
     
     # 统计记录数
     cursor.execute("SELECT COUNT(*) FROM news_data")
@@ -110,7 +110,7 @@ def test_load_news_data():
     cursor.execute("SELECT DISTINCT stock_code FROM raw_data LIMIT 1")
     row = cursor.fetchone()
     if not row:
-        print("❌ 没有找到股票代码")
+        print("没有找到股票代码")
         conn.close()
         return
     
@@ -147,7 +147,7 @@ def test_load_news_data():
             for date, count in grouped.items():
                 print(f"  {date}: {count} 条新闻")
     else:
-        print("  ❌ DataFrame 为空")
+        print("  DataFrame 为空")
 
 
 def test_news_count_feature():
@@ -165,7 +165,7 @@ def test_news_count_feature():
     cursor.execute("SELECT DISTINCT stock_code FROM raw_data LIMIT 1")
     row = cursor.fetchone()
     if not row:
-        print("❌ 没有找到股票代码")
+        print("没有找到股票代码")
         conn.close()
         return
     
@@ -178,7 +178,7 @@ def test_news_count_feature():
     print(f"\n加载股票数据...")
     stock_df = load_stock_data(symbol, lookback=0)
     if stock_df.empty:
-        print("❌ 股票数据为空")
+        print("股票数据为空")
         return
     
     print(f"股票数据形状: {stock_df.shape}")
@@ -189,7 +189,7 @@ def test_news_count_feature():
     # 获取 news_count 特征
     feature_spec = get_feature('news_count')
     if not feature_spec:
-        print("❌ 找不到 news_count 特征")
+        print("找不到 news_count 特征")
         return
     
     print(f"\n特征规范:")
@@ -229,7 +229,7 @@ def test_news_count_feature():
         print(f"\n非空值数量: {result.notna().sum()}")
         print(f"非零值数量: {(result != 0).sum()}")
     except Exception as e:
-        print(f"❌ 计算特征时出错: {e}")
+        print(f"计算特征时出错: {e}")
         import traceback
         traceback.print_exc()
 
@@ -241,7 +241,7 @@ def main():
     print("=" * 80)
     
     if not DB_PATH.exists():
-        print(f"❌ 数据库文件不存在: {DB_PATH}")
+        print(f"数据库文件不存在: {DB_PATH}")
         return
     
     check_raw_data_news()

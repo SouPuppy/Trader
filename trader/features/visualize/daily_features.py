@@ -551,7 +551,7 @@ def plot_feature_trends(
         if output_dir:
             output_file = output_dir / f'{feature_name}.png'
             plt.savefig(output_file, dpi=dpi, bbox_inches='tight', facecolor='white')
-            logger.info(f"✓ 保存图表到: {output_file}")
+            logger.info(f"保存图表到: {output_file}")
             plt.close()
             plotted_count += 1
         else:
@@ -588,7 +588,7 @@ def print_feature_summary(feature_data: Dict[str, pd.DataFrame], output_file: Op
             valid_symbols = [s for s in df.columns if df[s].notna().sum() > 0]
             total_points = sum(df[s].notna().sum() for s in df.columns)
             summary_lines.append(
-                f"  ✓ {feature_name:20s}\t| Symbols: {len(valid_symbols):3d}\t| "
+                f"  {feature_name:20s}\t| Symbols: {len(valid_symbols):3d}\t| "
                 f"Data Points: {total_points:5d}\t| Status: OK"
             )
         else:

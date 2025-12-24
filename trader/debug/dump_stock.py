@@ -215,7 +215,7 @@ def dump_stock(record_id: int = None, stock_code: str = None, show_full: bool = 
             else:
                 # 解析失败，显示原始数据预览
                 news_preview = row['news'][:500] + "..." if len(row['news']) > 500 else row['news']
-                print("⚠ 无法解析新闻 JSON，显示原始数据:")
+                print("无法解析新闻 JSON，显示原始数据:")
                 print(news_preview)
         else:
             print("无新闻数据")
@@ -252,16 +252,16 @@ def dump_stock(record_id: int = None, stock_code: str = None, show_full: bool = 
                                 if len(paraphrase) > 300 and not show_full:
                                     print(f"  ... (还有 {len(paraphrase) - 300} 字符)")
                             else:
-                                print("⚠ 未找到匹配的分析结果")
+                                print("未找到匹配的分析结果")
                         else:
-                            print("⚠ 无法转换 publish_time 为 UTC")
+                            print("无法转换 publish_time 为 UTC")
                     else:
-                        print("⚠ 新闻中没有 publish_time 字段")
+                        print("新闻中没有 publish_time 字段")
                 else:
-                    print("⚠ 无法解析新闻 JSON，无法查询分析结果")
+                    print("无法解析新闻 JSON，无法查询分析结果")
             except Exception as e:
                 logger.debug(f"查询分析结果时出错: {e}")
-                print(f"⚠ 查询分析结果时出错: {e}")
+                print(f"查询分析结果时出错: {e}")
         
         print("\n" + "=" * 80)
         
