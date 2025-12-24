@@ -19,13 +19,14 @@ from trader.agent.agent_logistic_with_llm_gate import LogisticAgentWithLLMGate
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
+from trader.backtest.report import BacktestReport
 from trader.logger import get_logger, log_separator, log_section
 
 logger = get_logger(__name__)
 
 
 def logistic_strategy_with_llm_gate(
-    stock_code: str = "AAPL.O",
+    stock_code: str = "AVGO.O",
     initial_cash: float = 1000000.0,
     feature_names: list = None,
     train_window_days: int = 252,  # 约1年交易日
@@ -79,16 +80,16 @@ def logistic_strategy_with_llm_gate(
     market = Market(price_adjustment=0.01)
     account = Account(initial_cash=initial_cash)
     
-    # 生成报告标题（包含策略名称和参数）
-    report_title = (
-        f"Logistic_LLMGate_Strategy_{stock_code}_"
-        f"train{train_window_days}_horizon{prediction_horizon}_"
-        f"retrain{retrain_frequency}_maxPos{max_position_weight*100:.0f}_"
-        f"llmTemp{llm_temperature:.2f}"
-    )
+    # 设置输出目录为实验文件夹
+    experiment_dir = Path(__file__).parent.name
+    from trader.config import PROJECT_ROOT
+    output_dir = PROJECT_ROOT / 'output' / 'backtest' / experiment_dir
+    
+    # 不生成自动报告，只记录 daily_records
     engine = BacktestEngine(
         account, market, 
-        report_title=report_title,
+        report_title=None,  # 不自动生成报告
+        report_output_dir=output_dir,
         train_test_split_ratio=train_test_split_ratio
     )
     
@@ -246,10 +247,69 @@ def logistic_strategy_with_llm_gate(
     # 输出详细账户摘要
     logger.info("")
     logger.info(account.summary(market_prices))
+    
+    # 生成单股票报告
+    logger.info("")
+    logger.info("生成回测报告...")
+    report = BacktestReport(output_dir=output_dir, title=None)
+    report.daily_records = engine.report.daily_records if engine.report else []
+    report.train_test_split_date = engine.train_test_split_date
+    
+    # 创建 assets 文件夹
+    assets_dir = output_dir / 'assets'
+    assets_dir.mkdir(exist_ok=True)
+    
+    actual_start_date = start_date or available_dates[0]
+    actual_end_date = end_date or available_dates[-1]
+    
+    # 生成图表（保存到 assets 文件夹）
+    original_output_dir = report.output_dir
+    report.output_dir = assets_dir
+    chart_file = report._generate_charts(stock_code, actual_start_date, actual_end_date)
+    report.output_dir = original_output_dir
+    
+    # 重命名图表为标准格式
+    chart_name = f"{stock_code.replace('.', '_')}_chart.png"
+    new_chart_path = assets_dir / chart_name
+    if chart_file and chart_file.exists() and chart_file != new_chart_path:
+        if new_chart_path.exists():
+            new_chart_path.unlink()
+        chart_file.rename(new_chart_path)
+        chart_file = new_chart_path
+    
+    # 生成报告
+    report_file = report.generate_report(
+        account, stock_code, actual_start_date, actual_end_date
+    )
+    
+    # 更新报告中的图表路径为 assets/xxx_chart.png
+    if chart_file and chart_file.exists() and report_file.exists():
+        chart_relative_path = f"assets/{chart_name}"
+        with open(report_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        import re
+        # 替换图表路径
+        content = re.sub(r'!\[回测走势图\]\([^)]+\)', f'![回测走势图]({chart_relative_path})', content)
+        with open(report_file, 'w', encoding='utf-8') as f:
+            f.write(content)
+    
+    # 重命名为 report.md
+    final_report_file = output_dir / "report.md"
+    if report_file != final_report_file:
+        if final_report_file.exists():
+            final_report_file.unlink()
+        report_file.rename(final_report_file)
+    
+    # 删除 JSON 报告（不需要）
+    json_files = list(output_dir.glob("backtest_report_*.json"))
+    for json_file in json_files:
+        json_file.unlink()
+    
+    logger.info(f"报告已保存: {final_report_file}")
 
 
 if __name__ == "__main__":
-    # 执行逻辑回归策略（增加投资比例 + LLM Gate 风险控制）
+    # 执行逻辑回归策略（增加投资比例 + LLM Gate 风险控制）- 只测试 AAPL.O
     logistic_strategy_with_llm_gate(
         stock_code="AAPL.O",
         initial_cash=1000000.0,

@@ -1,0 +1,165 @@
+# {{ title }}
+
+**策略名称:** {{ strategy_name }}  
+**回测期间:** {{ start_date }} 至 {{ end_date }}  
+**测试股票数:** {{ stock_count }} 支  
+**每只股票初始资金:** {{ "%.2f"|format(initial_cash_per_stock) }} 元
+
+---
+
+## 综合统计
+
+| 项目 | 数值 |
+|------|------|
+| 成功回测股票数 | {{ successful_count }}/{{ total_count }} |
+| 总初始资金 | {{ "%.2f"|format(total_initial_cash) }} 元 |
+| 总最终权益 | {{ "%.2f"|format(total_final_equity) }} 元 |
+| 总盈亏 | {{ "%+.2f"|format(total_profit) }} 元 |
+| 平均收益率 | {{ "%+.2f"|format(avg_return) }}% |
+| 总交易次数 | {{ total_trades }} 次 |
+
+---
+
+## 各股票详细结果
+
+| 股票代码 | 初始资金 | 最终权益 | 盈亏 | 收益率 | 交易次数 |
+|----------|----------|----------|------|--------|------------------|
+{% for result in results %}
+| {{ result.stock_code }} | {{ "%.2f"|format(result.initial_cash) }} | {{ "%.2f"|format(result.final_equity) }} | {{ "%+.2f"|format(result.profit) }} | {{ "%+.2f"|format(result.return_pct) }}% | {{ result.num_trades }} |
+{% endfor %}
+
+---
+
+## 收益率排名
+
+### 收益率最高的股票
+
+| 排名 | 股票代码 | 收益率 | 盈亏 |
+|------|----------|--------|------|
+{% for result in top_returns[:5] %}
+| {{ loop.index }} | {{ result.stock_code }} | {{ "%+.2f"|format(result.return_pct) }}% | {{ "%+.2f"|format(result.profit) }} |
+{% endfor %}
+
+### 收益率最低的股票
+
+| 排名 | 股票代码 | 收益率 | 盈亏 |
+|------|----------|--------|------|
+{% for result in bottom_returns[:5] %}
+| {{ loop.index }} | {{ result.stock_code }} | {{ "%+.2f"|format(result.return_pct) }}% | {{ "%+.2f"|format(result.profit) }} |
+{% endfor %}
+
+---
+
+## 交易统计
+
+| 股票代码 | 交易次数 | 平均每笔交易金额 |
+|----------|------------------|------------------|
+{% for result in results %}
+| {{ result.stock_code }} | {{ result.num_trades }} | {% if result.num_trades > 0 %}{{ "%.2f"|format((result.initial_cash + result.final_equity) / 2 / result.num_trades) }}{% else %}0.00{% endif %} |
+{% endfor %}
+
+---
+
+## 各股票详细分析
+
+{% if stock_details %}
+{% for detail in stock_details %}
+### {{ detail.stock_code }}
+
+{% if detail.chart_path %}
+![{{ detail.stock_code }} 回测走势图]({{ detail.chart_path }})
+{% endif %}
+
+#### 账户摘要
+
+| 项目 | 数值 |
+|------|------|
+| 初始资金 | {{ "%.2f"|format(detail.result.initial_cash) }} 元 |
+| 最终现金 | {{ "%.2f"|format(detail.final_cash) }} 元 |
+| 最终持仓市值 | {{ "%.2f"|format(detail.final_equity - detail.final_cash) }} 元 |
+| 最终总权益 | {{ "%.2f"|format(detail.final_equity) }} 元 |
+| 总盈亏 | {{ "%+.2f"|format(detail.result.profit) }} 元 |
+| 总收益率 | {{ "%+.2f"|format(detail.result.return_pct) }}% |
+
+{% if detail.statistics.cash_ratio is defined %}
+| 资金比（现金/权益） | {{ "%.2f"|format(detail.statistics.cash_ratio) }}% |
+{% endif %}
+
+#### 风险与稳健性指标
+
+| 指标 | 数值 |
+|------|------|
+| 最大回撤 (Max Drawdown) | {{ "%.2f"|format(detail.statistics.max_drawdown_pct) }}% |
+{% if detail.statistics.cagr is defined %}
+| 年化收益率 (CAGR) | {{ "%+.2f"|format(detail.statistics.cagr) }}% |
+{% endif %}
+{% if detail.statistics.sharpe_annual is defined %}
+| 年化夏普比率 (Sharpe) | {{ "%.4f"|format(detail.statistics.sharpe_annual) }} |
+| 日频夏普比率 (Sharpe Daily) | {{ "%.4f"|format(detail.statistics.sharpe_daily) }} |
+{% endif %}
+{% if detail.statistics.sortino_annual is defined %}
+| 年化 Sortino 比率 | {{ "%.4f"|format(detail.statistics.sortino_annual) }} |
+| 日频 Sortino 比率 | {{ "%.4f"|format(detail.statistics.sortino_daily) }} |
+{% endif %}
+{% if detail.statistics.calmar is defined and detail.statistics.calmar is not none %}
+| Calmar 比率 (CAGR/MaxDD) | {{ "%.4f"|format(detail.statistics.calmar) }} |
+{% endif %}
+{% if detail.statistics.volatility_annual is defined %}
+| 年化波动率 (Volatility) | {{ "%.2f"|format(detail.statistics.volatility_annual) }}% |
+{% endif %}
+{% if detail.statistics.var_95 is defined %}
+| VaR 95% | {{ "%.2f"|format(detail.statistics.var_95) }}% |
+| VaR 99% | {{ "%.2f"|format(detail.statistics.var_99) }}% |
+| CVaR 95% | {{ "%.2f"|format(detail.statistics.cvar_95) }}% |
+| CVaR 99% | {{ "%.2f"|format(detail.statistics.cvar_99) }}% |
+{% endif %}
+
+#### 统计信息
+
+| 指标 | 数值 |
+|------|------|
+| 交易日数 | {{ detail.statistics.trading_days }} 天 |
+| 最高权益 | {{ "%.2f"|format(detail.statistics.max_equity) }} 元 |
+| 最低权益 | {{ "%.2f"|format(detail.statistics.min_equity) }} 元 |
+| 最高收益率 | {{ "%+.2f"|format(detail.statistics.max_return_pct) }}% |
+| 最低收益率 | {{ "%+.2f"|format(detail.statistics.min_return_pct) }}% |
+
+{% if detail.final_positions %}
+#### 最终持仓
+
+| 股票代码 | 股数 | 成本价 | 现价 | 市值 | 盈亏 | 收益率 |
+|----------|------|--------|------|------|------|--------|
+{% for stock_code, pos in detail.final_positions.items() %}
+| {{ stock_code }} | {{ pos.shares }} | {{ "%.2f"|format(pos.average_price) }} | {{ "%.2f"|format(pos.current_price) }} | {{ "%.2f"|format(pos.market_value) }} | {{ "%+.2f"|format(pos.profit) }} | {{ "%+.2f"|format(pos.return_pct) }}% |
+{% endfor %}
+{% endif %}
+
+---
+
+{% endfor %}
+{% endif %}
+
+{% if failed_results %}
+## 失败的回测
+
+| 股票代码 | 错误信息 |
+|----------|----------|
+{% for result in failed_results %}
+| {{ result.stock_code }} | {{ result.error }} |
+{% endfor %}
+{% endif %}
+
+---
+
+## 策略参数
+
+{% if strategy_params %}
+{% for key, value in strategy_params.items() %}
+- **{{ key }}:** {{ value }}
+{% endfor %}
+{% endif %}
+
+---
+
+*报告生成时间: {{ report_time }}*
+

@@ -41,10 +41,8 @@ class BacktestReport:
         
         # 如果有 title，创建子文件夹
         if title:
-            # 清理 title，移除特殊字符，用于文件夹名
-            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
-            safe_title = safe_title.replace(' ', '_')
-            self.output_dir = base_output_dir / safe_title
+            # 直接使用 title，不做任何修改
+            self.output_dir = base_output_dir / title
         else:
             self.output_dir = base_output_dir
         
@@ -56,7 +54,7 @@ class BacktestReport:
         self.train_test_split_date: Optional[str] = None  # 训练/测试分割日期（用于图表显示）
         
         # 初始化 Jinja2 环境
-        template_dir = Path(__file__).parent
+        template_dir = Path(__file__).parent / 'template'
         self.jinja_env = Environment(
             loader=FileSystemLoader(str(template_dir)),
             autoescape=select_autoescape(['html', 'xml']),
@@ -148,9 +146,9 @@ class BacktestReport:
         self.train_test_split_date = split_date
     
     def generate_report(self, account, stock_code: str, start_date: str, end_date: str, 
-                       all_stock_codes: Optional[List[str]] = None):
+                       all_stock_codes: Optional[List[str]] = None, is_multi_asset: bool = False):
         """
-        生成完整的回测报告（支持多股票）
+        生成完整的回测报告（支持多股票和多资产）
         
         Args:
             account: 账户实例
@@ -158,6 +156,7 @@ class BacktestReport:
             start_date: 开始日期
             end_date: 结束日期
             all_stock_codes: 所有股票代码列表（用于多资产回测）
+            is_multi_asset: 是否为多资产组合策略
         """
         logger.info("生成回测报告...")
         
@@ -171,6 +170,13 @@ class BacktestReport:
             if not all_stock_codes:
                 all_stock_codes = [stock_code]
         
+        # 如果是多资产策略，使用多资产报告模板
+        if is_multi_asset or len(all_stock_codes) > 1:
+            return self.generate_multi_asset_report(
+                account, all_stock_codes, start_date, end_date
+            )
+        
+        # 单股票或多股票分别测试，使用原有模板
         # 先生成走势图（需要在 Markdown 中引用）
         chart_file = self._generate_charts(stock_code, start_date, end_date)
         
@@ -180,19 +186,236 @@ class BacktestReport:
         )
         
         # 保存 Markdown 报告（使用 title 在文件名中）
-        safe_title = "".join(c for c in self.title if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_')
-        report_file = self.output_dir / f"backtest_report_{safe_title}_{stock_code}_{start_date}_{end_date}.md"
+        report_file = self.output_dir / f"backtest_report_{self.title}_{stock_code}_{start_date}_{end_date}.md"
         with open(report_file, 'w', encoding='utf-8') as f:
             f.write(markdown_report)
         logger.info(f"Markdown 报告已保存: {report_file}")
         
         # 生成 JSON 报告
         json_report = self._generate_json_report(account, stock_code, start_date, end_date, all_stock_codes)
-        json_file = self.output_dir / f"backtest_report_{safe_title}_{stock_code}_{start_date}_{end_date}.json"
+        json_file = self.output_dir / f"backtest_report_{self.title}_{stock_code}_{start_date}_{end_date}.json"
         with open(json_file, 'w', encoding='utf-8') as f:
             json.dump(json_report, f, indent=2, ensure_ascii=False, default=str)
         logger.info(f"JSON 报告已保存: {json_file}")
         
+        return report_file
+    
+    def generate_multi_asset_report(
+        self,
+        account,
+        stock_codes: List[str],
+        start_date: str,
+        end_date: str,
+        strategy_name: Optional[str] = None,
+        strategy_params: Optional[Dict] = None
+    ) -> Path:
+        """
+        生成多资产组合报告
+        
+        Args:
+            account: 账户实例
+            stock_codes: 所有股票代码列表
+            start_date: 开始日期
+            end_date: 结束日期
+            strategy_name: 策略名称（可选）
+            strategy_params: 策略参数字典（可选）
+        
+        Returns:
+            报告文件路径
+        """
+        logger.info("生成多资产组合报告...")
+        
+        # 获取最终市场价格
+        market_prices = {}
+        for stock_code in stock_codes:
+            # 从 daily_records 中获取最后的价格
+            if self.daily_records:
+                last_record = self.daily_records[-1]
+                if stock_code in last_record.get('positions', {}):
+                    market_prices[stock_code] = last_record['positions'][stock_code]['current_price']
+        
+        # 如果没有价格，使用账户的持仓价格
+        if not market_prices:
+            for stock_code, position in account.positions.items():
+                if stock_code in stock_codes:
+                    # 使用平均价格作为当前价格（如果没有更好的数据）
+                    market_prices[stock_code] = position['average_price']
+        
+        # 计算最终状态
+        final_equity = account.equity(market_prices)
+        final_profit = account.get_total_profit(market_prices)
+        final_return_pct = account.get_total_return(market_prices)
+        
+        # 准备最终状态数据
+        final_state = {
+            'cash': account.cash,
+            'positions_value': final_equity - account.cash,
+            'equity': final_equity,
+            'profit': final_profit,
+            'return_pct': final_return_pct,
+            'positions': {}
+        }
+        
+        # 添加持仓明细
+        for stock_code in stock_codes:
+            position = account.get_position(stock_code)
+            if position and stock_code in market_prices:
+                price = market_prices[stock_code]
+                shares = position['shares']
+                avg_price = position['average_price']
+                value = shares * price
+                profit = (price - avg_price) * shares
+                return_pct = ((price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+                weight = value / final_equity if final_equity > 0 else 0.0
+                
+                final_state['positions'][stock_code] = {
+                    'shares': shares,
+                    'average_price': avg_price,
+                    'current_price': price,
+                    'market_value': value,
+                    'profit': profit,
+                    'return_pct': return_pct,
+                    'weight': weight
+                }
+        
+        # 计算各股票表现和贡献度
+        stock_performance = {}
+        for stock_code in stock_codes:
+            if stock_code in final_state['positions']:
+                pos = final_state['positions'][stock_code]
+                # 计算初始权重（从交易记录中估算）
+                initial_weight = 0.0
+                buy_trades = [t for t in account.trades if t['stock_code'] == stock_code and t['type'] == 'buy']
+                if buy_trades:
+                    total_buy_cost = sum(t['cost'] for t in buy_trades)
+                    initial_weight = total_buy_cost / account.initial_cash if account.initial_cash > 0 else 0.0
+                
+                # 计算贡献度（权重 * 收益率）
+                contribution = pos['weight'] * pos['return_pct']
+                
+                # 计算交易次数
+                num_trades = len([t for t in account.trades if t['stock_code'] == stock_code])
+                
+                stock_performance[stock_code] = {
+                    'initial_weight': initial_weight,
+                    'final_weight': pos['weight'],
+                    'return_pct': pos['return_pct'],
+                    'profit': pos['profit'],
+                    'num_trades': num_trades,
+                    'contribution': contribution
+                }
+        
+        # 准备模板数据
+        template_data = {
+            'title': self.title,
+            'strategy_name': strategy_name or self.title,
+            'start_date': start_date,
+            'end_date': end_date,
+            'trading_days': len(self.daily_records),
+            'stock_count': len(stock_codes),
+            'initial_cash': account.initial_cash,
+            'final_state': final_state,
+            'stock_performance': stock_performance,
+            'strategy_params': strategy_params or {},
+            'report_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # 添加交易统计
+        if account.trades:
+            buy_trades = [t for t in account.trades if t['type'] == 'buy']
+            sell_trades = [t for t in account.trades if t['type'] == 'sell']
+            template_data['trade_statistics'] = {
+                'total_trades': len(account.trades),
+                'buy_count': len(buy_trades),
+                'sell_count': len(sell_trades),
+                'total_buy_cost': sum(t['cost'] for t in buy_trades),
+                'total_sell_revenue': sum(t.get('revenue', 0) for t in sell_trades),
+                'realized_profit': sum(t.get('profit', 0) for t in sell_trades)
+            }
+            
+            # 添加交易记录（按日期排序）
+            sorted_trades = sorted(
+                account.trades,
+                key=lambda t: t['date'] if isinstance(t['date'], datetime) else pd.to_datetime(t['date'])
+            )
+            template_data['trades'] = sorted_trades
+        
+        # 添加统计信息
+        if len(self.daily_records) > 1:
+            equities = [r['equity'] for r in self.daily_records]
+            returns = [r['return_pct'] for r in self.daily_records]
+            max_drawdown = self._calculate_max_drawdown(equities)
+            
+            daily_returns, sharpe_info = self._calculate_daily_returns(risk_free_rate_annual=0.0)
+            
+            # 基础统计
+            template_data['statistics'] = {
+                'max_equity': max(equities),
+                'min_equity': min(equities),
+                'max_return_pct': max(returns),
+                'min_return_pct': min(returns),
+                'max_drawdown_pct': max_drawdown
+            }
+            
+            # 添加夏普比率
+            if sharpe_info:
+                template_data['statistics']['sharpe_annual'] = sharpe_info['sharpe_annual']
+                template_data['statistics']['sharpe_daily'] = sharpe_info['sharpe_daily']
+            
+            # 计算 CAGR
+            start_equity = equities[0]
+            end_equity = equities[-1]
+            cagr = self._calculate_cagr(start_equity, end_equity, len(self.daily_records))
+            template_data['statistics']['cagr'] = cagr
+            
+            # 计算 Calmar 比率
+            calmar = self._calculate_calmar(cagr, max_drawdown)
+            template_data['statistics']['calmar'] = calmar
+            
+            # 计算波动率
+            if daily_returns:
+                volatility = self._calculate_volatility(daily_returns)
+                template_data['statistics']['volatility_annual'] = volatility
+            
+            # 计算 Sortino 比率
+            if daily_returns:
+                sortino_info = self._calculate_sortino(daily_returns, risk_free_rate_annual=0.0)
+                if sortino_info:
+                    template_data['statistics']['sortino_annual'] = sortino_info.get('sortino_annual', 0.0)
+                    template_data['statistics']['sortino_daily'] = sortino_info.get('sortino_daily', 0.0)
+            
+            # 计算尾部风险
+            if daily_returns:
+                var_cvar = self._calculate_tail_risk(daily_returns)
+                if var_cvar:
+                    template_data['statistics'].update(var_cvar)
+        
+        # 添加交易质量指标
+        if account.trades:
+            trade_metrics = self._calculate_trade_metrics(account)
+            if trade_metrics:
+                template_data['trade_metrics'] = trade_metrics
+        
+        # 添加执行指标
+        if len(self.daily_records) > 1 and account.trades:
+            execution_metrics = self._calculate_execution_metrics(account, len(self.daily_records))
+            if execution_metrics:
+                template_data['execution_metrics'] = execution_metrics
+        
+        # 生成走势图
+        chart_file = self._generate_charts(stock_codes[0] if stock_codes else "portfolio", start_date, end_date, all_stock_codes=stock_codes)
+        template_data['chart_file'] = chart_file.name if chart_file else None
+        
+        # 渲染模板
+        template = self.jinja_env.get_template('multi_asset_report_template.md.j2')
+        markdown_report = template.render(**template_data)
+        
+        # 保存报告
+        report_file = self.output_dir / f"multi_asset_report_{self.title}_{start_date}_{end_date}.md"
+        with open(report_file, 'w', encoding='utf-8') as f:
+            f.write(markdown_report)
+        
+        logger.info(f"多资产组合报告已保存: {report_file}")
         return report_file
     
     def _generate_markdown_report(self, account, stock_code: str, start_date: str, end_date: str, 
@@ -327,7 +550,7 @@ class BacktestReport:
             template_data['chart_file'] = None
         
         # 渲染模板
-        template = self.jinja_env.get_template('report_template.md.j2')
+        template = self.jinja_env.get_template('single_stock_report_template.md.j2')
         return template.render(**template_data)
     
     def _format_header(self, stock_code: str, start_date: str, end_date: str) -> List[str]:
@@ -984,7 +1207,7 @@ class BacktestReport:
             'beta': beta
         }
     
-    def _generate_charts(self, stock_code: str, start_date: str, end_date: str) -> Optional[Path]:
+    def _generate_charts(self, stock_code: str, start_date: str, end_date: str, all_stock_codes: Optional[List[str]] = None) -> Optional[Path]:
         """生成走势图（支持多股票）"""
         if not self.daily_records:
             logger.warning("没有每日记录，无法生成走势图")
@@ -1022,11 +1245,15 @@ class BacktestReport:
             display_df = df.copy()
             test_start_equity = self.daily_records[0]['equity']
         
-        # 检测是否有多个股票
-        all_stock_codes = set()
-        for record in display_df.to_dict('records'):
-            if 'positions' in record and record['positions']:
-                all_stock_codes.update(record['positions'].keys())
+        # 检测是否有多个股票（如果未提供，则从记录中检测）
+        if all_stock_codes is None:
+            all_stock_codes = set()
+            for record in display_df.to_dict('records'):
+                if 'positions' in record and record['positions']:
+                    all_stock_codes.update(record['positions'].keys())
+        else:
+            # 如果提供了，转换为 set
+            all_stock_codes = set(all_stock_codes)
         
         is_multi_asset = len(all_stock_codes) > 1
         
@@ -1232,15 +1459,15 @@ class BacktestReport:
         plt.tight_layout()
         
         # 保存图表（使用 title 在文件名中）
-        safe_title = "".join(c for c in self.title if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_')
-        chart_file = self.output_dir / f"backtest_charts_{safe_title}_{stock_code}_{start_date}_{end_date}.png"
+        chart_title = self.title or "backtest"
+        chart_file = self.output_dir / f"backtest_charts_{chart_title}_{stock_code}_{start_date}_{end_date}.png"
         plt.savefig(chart_file, dpi=150, bbox_inches='tight')
         plt.close()
         
         # 如果是多资产回测，生成额外的多股票图表
         if is_multi_asset and all_stock_codes:
             multi_asset_chart_file = self._generate_multi_asset_charts(
-                display_df, all_stock_codes, start_date, end_date, safe_title
+                display_df, all_stock_codes, start_date, end_date, self.title or "backtest"
             )
             if multi_asset_chart_file:
                 logger.info(f"多资产图表已保存: {multi_asset_chart_file}")
@@ -1249,7 +1476,7 @@ class BacktestReport:
         return chart_file
     
     def _generate_multi_asset_charts(self, display_df: pd.DataFrame, stock_codes: set, 
-                                     start_date: str, end_date: str, safe_title: str) -> Optional[Path]:
+                                     start_date: str, end_date: str, title: str) -> Optional[Path]:
         """
         生成多资产回测的额外图表
         
@@ -1258,7 +1485,7 @@ class BacktestReport:
             stock_codes: 股票代码集合
             start_date: 开始日期
             end_date: 结束日期
-            safe_title: 安全的标题字符串
+            title: 标题字符串
             
         Returns:
             Optional[Path]: 图表文件路径
@@ -1386,7 +1613,7 @@ class BacktestReport:
             plt.tight_layout()
             
             # 保存多资产图表
-            chart_file = self.output_dir / f"multi_asset_charts_{safe_title}_{start_date}_{end_date}.png"
+            chart_file = self.output_dir / f"multi_asset_charts_{title}_{start_date}_{end_date}.png"
             plt.savefig(chart_file, dpi=150, bbox_inches='tight')
             plt.close()
             
@@ -1394,5 +1621,319 @@ class BacktestReport:
             
         except Exception as e:
             logger.error(f"生成多资产图表时出错: {e}", exc_info=True)
+            return None
+    
+    def generate_multi_stock_report(
+        self,
+        results: List[Dict],
+        strategy_name: str,
+        start_date: str,
+        end_date: str,
+        initial_cash_per_stock: float,
+        strategy_params: Optional[Dict] = None
+    ) -> Path:
+        """
+        生成多股票综合报告
+        
+        Args:
+            results: 回测结果列表，每个结果包含 stock_code, initial_cash, final_equity, profit, return_pct, num_trades 等
+            strategy_name: 策略名称
+            start_date: 开始日期
+            end_date: 结束日期
+            initial_cash_per_stock: 每只股票的初始资金
+            strategy_params: 策略参数字典（可选）
+        
+        Returns:
+            报告文件路径
+        """
+        logger.info("生成多股票综合报告...")
+        
+        # 分离成功和失败的结果
+        successful_results = [r for r in results if 'error' not in r]
+        failed_results = [r for r in results if 'error' in r]
+        
+        # 计算统计信息
+        total_count = len(results)
+        successful_count = len(successful_results)
+        total_initial_cash = sum(r['initial_cash'] for r in successful_results)
+        total_final_equity = sum(r['final_equity'] for r in successful_results)
+        total_profit = sum(r['profit'] for r in successful_results)
+        avg_return = sum(r['return_pct'] for r in successful_results) / successful_count if successful_count > 0 else 0.0
+        
+        # 兼容不同的字段名（num_trades 或 dca_executions 等）
+        total_trades = sum(
+            r.get('num_trades', r.get('dca_executions', r.get('trades', 0)))
+            for r in successful_results
+        )
+        
+        # 创建 assets 文件夹
+        assets_dir = self.output_dir / 'assets'
+        assets_dir.mkdir(exist_ok=True)
+        
+        # 统一字段名：为每个结果添加 num_trades 字段（如果不存在）
+        # 同时为每个股票生成图表和详细指标
+        normalized_results = []
+        stock_details = []  # 存储每个股票的详细信息（包含图表和指标）
+        
+        for r in successful_results:
+            normalized_r = r.copy()
+            # 统一交易次数字段名
+            if 'num_trades' not in normalized_r:
+                normalized_r['num_trades'] = normalized_r.get('dca_executions', normalized_r.get('trades', 0))
+            
+            # 为每个股票生成图表和详细指标
+            stock_detail = self._generate_stock_detail(
+                r, assets_dir, start_date, end_date
+            )
+            if stock_detail:
+                stock_detail['stock_code'] = r['stock_code']
+                stock_details.append(stock_detail)
+            
+            normalized_results.append(normalized_r)
+        
+        # 按收益率排序
+        top_returns = sorted(normalized_results, key=lambda x: x['return_pct'], reverse=True)
+        bottom_returns = sorted(normalized_results, key=lambda x: x['return_pct'])
+        
+        # 创建 stock_code 到 result 的映射，方便模板访问
+        results_dict = {r['stock_code']: r for r in normalized_results}
+        
+        # 将 stock_details 与 results 合并，方便模板访问
+        merged_stock_details = []
+        for detail in stock_details:
+            stock_code = detail['stock_code']
+            if stock_code in results_dict:
+                merged_detail = detail.copy()
+                merged_detail['result'] = results_dict[stock_code]
+                merged_stock_details.append(merged_detail)
+        
+        # 准备模板数据
+        template_data = {
+            'title': f"{strategy_name} - 多股票回测综合报告",
+            'strategy_name': strategy_name,
+            'start_date': start_date,
+            'end_date': end_date,
+            'stock_count': total_count,
+            'initial_cash_per_stock': initial_cash_per_stock,
+            'successful_count': successful_count,
+            'total_count': total_count,
+            'total_initial_cash': total_initial_cash,
+            'total_final_equity': total_final_equity,
+            'total_profit': total_profit,
+            'avg_return': avg_return,
+            'total_trades': total_trades,
+            'results': normalized_results,
+            'stock_details': merged_stock_details,  # 每个股票的详细信息（已合并 result）
+            'top_returns': top_returns,
+            'bottom_returns': bottom_returns,
+            'failed_results': failed_results,
+            'strategy_params': strategy_params or {},
+            'report_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # 渲染模板
+        template = self.jinja_env.get_template('multi_stock_report_template.md.j2')
+        markdown_report = template.render(**template_data)
+        
+        # 保存报告（使用简单的文件名 report.md）
+        report_file = self.output_dir / "report.md"
+        with open(report_file, 'w', encoding='utf-8') as f:
+            f.write(markdown_report)
+        
+        logger.info(f"多股票综合报告已保存: {report_file}")
+        return report_file
+    
+    def _generate_stock_detail(
+        self,
+        result: Dict,
+        assets_dir: Path,
+        start_date: str,
+        end_date: str
+    ) -> Optional[Dict]:
+        """
+        为单个股票生成图表和详细指标
+        
+        Args:
+            result: 股票回测结果字典（包含 account, engine, market 等信息）
+            assets_dir: assets 文件夹路径
+            start_date: 开始日期
+            end_date: 结束日期
+        
+        Returns:
+            包含图表路径和详细指标的字典
+        """
+        try:
+            account = result.get('account')
+            engine = result.get('engine')
+            market = result.get('market')
+            stock_code = result['stock_code']
+            actual_start_date = result.get('start_date', start_date)
+            actual_end_date = result.get('end_date', end_date)
+            
+            if not account or not engine:
+                logger.warning(f"股票 {stock_code} 缺少账户或引擎信息，跳过图表生成")
+                return None
+            
+            # 创建临时的 BacktestReport 实例来生成图表
+            # 注意：不传入 title，避免创建额外的子目录，图表直接保存到 assets_dir
+            temp_report = BacktestReport(output_dir=assets_dir, title=None)
+            temp_report.daily_records = engine.report.daily_records if engine.report else []
+            temp_report.train_test_split_date = engine.train_test_split_date if engine else None
+            
+            if not temp_report.daily_records:
+                logger.warning(f"股票 {stock_code} 没有每日记录，跳过图表生成")
+                return None
+            
+            # 生成图表（会保存到 assets_dir）
+            chart_file = temp_report._generate_charts(
+                stock_code, actual_start_date, actual_end_date
+            )
+            
+            # 如果生成了图表，重命名为标准格式
+            chart_path = None
+            if chart_file and chart_file.exists():
+                # 重命名图表为标准格式
+                new_chart_name = f"{stock_code.replace('.', '_')}_chart.png"
+                new_chart_path = assets_dir / new_chart_name
+                if chart_file != new_chart_path:
+                    # 如果文件已存在，先删除
+                    if new_chart_path.exists():
+                        new_chart_path.unlink()
+                    chart_file.rename(new_chart_path)
+                chart_path = f"assets/{new_chart_name}"
+            elif chart_file:
+                # 如果图表文件路径存在但文件不存在，尝试使用文件名
+                chart_path = f"assets/{chart_file.name}"
+            
+            # 计算详细指标
+            df = pd.DataFrame(temp_report.daily_records)
+            if df.empty:
+                return {
+                    'chart_path': chart_path,
+                    'statistics': {}
+                }
+            
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date')
+            
+            # 分离训练期和测试期
+            if 'is_test_period' in df.columns:
+                test_df = df[df['is_test_period']].copy()
+            else:
+                test_df = df.copy()
+            
+            if test_df.empty:
+                test_df = df.copy()
+            
+            # 计算指标
+            equities = test_df['equity'].tolist()
+            returns = test_df['return_pct'].tolist()
+            
+            if len(equities) < 2:
+                return {
+                    'chart_path': chart_path,
+                    'statistics': {}
+                }
+            
+            # 计算最大回撤
+            max_drawdown = temp_report._calculate_max_drawdown(equities)
+            
+            # 计算日收益率
+            daily_returns = []
+            for i in range(1, len(equities)):
+                if equities[i-1] > 0:
+                    ret = (equities[i] / equities[i-1]) - 1.0
+                    daily_returns.append(ret)
+            
+            # 计算夏普比率
+            sharpe_info = None
+            if daily_returns:
+                mean_return = sum(daily_returns) / len(daily_returns)
+                variance = sum((r - mean_return) ** 2 for r in daily_returns) / (len(daily_returns) - 1) if len(daily_returns) > 1 else 0.0
+                std_return = math.sqrt(variance) if variance > 0 else 0.0
+                sharpe_daily = (mean_return / std_return) if std_return > 0 else 0.0
+                sharpe_annual = sharpe_daily * math.sqrt(252)
+                sharpe_info = {
+                    'sharpe_daily': sharpe_daily,
+                    'sharpe_annual': sharpe_annual
+                }
+            
+            # 计算 CAGR
+            start_equity = equities[0]
+            end_equity = equities[-1]
+            trading_days = len(equities)
+            if start_equity > 0 and trading_days > 0:
+                total_return = (end_equity / start_equity) - 1.0
+                years = trading_days / 252.0
+                cagr = ((1 + total_return) ** (1 / years) - 1) * 100 if years > 0 else 0.0
+            else:
+                cagr = 0.0
+            
+            # 计算 Calmar 比率
+            calmar = (cagr / abs(max_drawdown)) if max_drawdown != 0 else None
+            
+            # 计算波动率
+            volatility_annual = None
+            if daily_returns and len(daily_returns) > 1:
+                std_return = math.sqrt(sum((r - sum(daily_returns)/len(daily_returns))**2 for r in daily_returns) / (len(daily_returns) - 1))
+                volatility_annual = std_return * math.sqrt(252) * 100
+            
+            # 计算 Sortino 比率
+            sortino_info = None
+            if daily_returns:
+                sortino_info = temp_report._calculate_sortino(daily_returns, risk_free_rate_annual=0.0)
+            
+            # 计算尾部风险
+            var_cvar = None
+            if daily_returns:
+                var_cvar = temp_report._calculate_tail_risk(daily_returns)
+            
+            # 计算最终持仓信息
+            final_record = test_df.iloc[-1] if not test_df.empty else None
+            final_positions = {}
+            if final_record is not None and 'positions' in final_record and final_record['positions']:
+                final_positions = final_record['positions']
+            
+            # 计算资金比（现金/权益）
+            cash_ratio = None
+            if final_record is not None:
+                final_equity = final_record.get('equity', 0)
+                final_cash = final_record.get('cash', 0)
+                cash_ratio = (final_cash / final_equity * 100) if final_equity > 0 else 0.0
+            
+            statistics = {
+                'max_drawdown_pct': max_drawdown,
+                'cagr': cagr,
+                'calmar': calmar,
+                'volatility_annual': volatility_annual,
+                'cash_ratio': cash_ratio,
+                'trading_days': trading_days,
+                'max_equity': max(equities),
+                'min_equity': min(equities),
+                'max_return_pct': max(returns),
+                'min_return_pct': min(returns)
+            }
+            
+            if sharpe_info:
+                statistics.update(sharpe_info)
+            
+            if sortino_info:
+                statistics['sortino_annual'] = sortino_info.get('sortino_annual', 0.0)
+                statistics['sortino_daily'] = sortino_info.get('sortino_daily', 0.0)
+            
+            if var_cvar:
+                statistics.update(var_cvar)
+            
+            # 只生成图表，不生成详细报告
+            return {
+                'chart_path': chart_path,
+                'statistics': statistics,
+                'final_positions': final_positions,
+                'final_cash': final_record.get('cash', 0) if final_record is not None else 0,
+                'final_equity': final_record.get('equity', 0) if final_record is not None else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"生成股票 {result.get('stock_code', 'unknown')} 的详细指标时出错: {e}", exc_info=True)
             return None
 

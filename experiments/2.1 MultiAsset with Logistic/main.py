@@ -87,11 +87,8 @@ def multi_asset_strategy(
     logger.info(f"最小交易金额: {min_trade_amount:,.0f} 元")
     logger.info(f"最小权重变化阈值: {min_weight_change*100:.0f}%")
     
-    # 生成报告标题
-    report_title = (
-        f"MultiAsset_Logistic_Strategy_"
-        f"{len(valid_stock_codes)}stocks_maxPos{max_position_weight*100:.0f}"
-    )
+    # 生成报告标题（与实验名称对齐）
+    report_title = "2.1 MultiAsset with Logistic"
     engine = BacktestEngine(
         account, market,
         report_title=report_title,
@@ -221,6 +218,31 @@ def multi_asset_strategy(
             # 输出详细账户摘要
             logger.info("")
             logger.info(account.summary(final_prices))
+            
+            # 生成多资产组合报告
+            if engine.report:
+                logger.info("")
+                logger.info("生成多资产组合报告...")
+                strategy_params = {
+                    "max_position_weight": f"{max_position_weight*100:.0f}%",
+                    "min_score_threshold": f"{min_score_threshold:.2f}",
+                    "max_total_weight": f"{max_total_weight*100:.0f}%",
+                    "train_window_days": train_window_days,
+                    "prediction_horizon": prediction_horizon,
+                    "ret_threshold": ret_threshold,
+                    "retrain_frequency": retrain_frequency,
+                    "min_trade_amount": f"{min_trade_amount:,.0f} 元",
+                    "min_weight_change": f"{min_weight_change*100:.0f}%"
+                }
+                
+                report_file = engine.report.generate_multi_asset_report(
+                    account=account,
+                    stock_codes=valid_stock_codes,
+                    start_date=start_date or engine.trading_dates[0] if engine.trading_dates else "N/A",
+                    end_date=end_date or engine.trading_dates[-1] if engine.trading_dates else "N/A",
+                    strategy_params=strategy_params
+                )
+                logger.info(f"多资产组合报告已保存: {report_file}")
 
 
 if __name__ == "__main__":

@@ -1,9 +1,12 @@
 """
 Logistic Regression 逻辑回归策略回测示例（增加投资比例 + 风险控制）
 使用 LogisticAgentWithRiskControl 实现基于逻辑回归的预测策略，增加投资比例并通过杠杆限制进行风险控制
+
+对 trader/config.toml 中的所有 test 股票分别进行单股票回测，生成综合报告
 """
 import sys
 from pathlib import Path
+from typing import List, Optional, Dict
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent.parent
@@ -14,13 +17,15 @@ from trader.agent.agent_logistic_with_risk_control import LogisticAgentWithRiskC
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
+from trader.backtest.report import BacktestReport
 from trader.risk.OrderIntent import OrderIntent, OrderSide, PriceType
+from trader.config_loader import get_test_stocks
 from trader.logger import get_logger, log_separator, log_section
 
 logger = get_logger(__name__)
 
 
-def logistic_strategy_with_risk_control(
+def logistic_strategy_with_risk_control_single(
     stock_code: str = "AAPL.O",
     initial_cash: float = 1000000.0,
     feature_names: list = None,
@@ -35,9 +40,9 @@ def logistic_strategy_with_risk_control(
     max_leverage: float = 0.8,  # 最大杠杆率（0.8 = 总持仓市值不超过账户权益的80%，让风险控制起作用）
     start_date: str = None,
     end_date: str = None
-):
+) -> Optional[Dict]:
     """
-    逻辑回归策略回测（使用 LogisticAgentWithRiskControl，增加投资比例 + 风险控制）
+    逻辑回归策略回测（使用 LogisticAgentWithRiskControl，增加投资比例 + 风险控制）- 单股票版本
     
     Args:
         stock_code: 股票代码
@@ -54,6 +59,9 @@ def logistic_strategy_with_risk_control(
         max_leverage: 最大杠杆率（传递给 LeverageLimitRiskManager）
         start_date: 开始日期
         end_date: 结束日期
+    
+    Returns:
+        回测结果字典，包含 stock_code, initial_cash, final_equity, profit, return_pct, num_trades 等信息
     """
     for line in log_section("逻辑回归策略回测（增加投资比例 + 风险控制）"):
         logger.info(line)
@@ -72,16 +80,16 @@ def logistic_strategy_with_risk_control(
     market = Market(price_adjustment=0.01)
     account = Account(initial_cash=initial_cash)
     
-    # 生成报告标题（包含策略名称和参数）
-    report_title = (
-        f"Logistic_RiskControl_Strategy_{stock_code}_"
-        f"train{train_window_days}_horizon{prediction_horizon}_"
-        f"retrain{retrain_frequency}_maxPos{max_position_weight*100:.0f}_"
-        f"maxLev{max_leverage:.2f}"
-    )
+    # 设置输出目录为实验文件夹
+    experiment_dir = Path(__file__).parent.name
+    from trader.config import PROJECT_ROOT
+    output_dir = PROJECT_ROOT / 'output' / 'backtest' / experiment_dir
+    
+    # 不生成自动报告，只记录 daily_records
     engine = BacktestEngine(
         account, market, 
-        report_title=report_title,
+        report_title=None,  # 不自动生成报告
+        report_output_dir=output_dir,
         train_test_split_ratio=train_test_split_ratio
     )
     
@@ -239,12 +247,208 @@ def logistic_strategy_with_risk_control(
     # 输出详细账户摘要
     logger.info("")
     logger.info(account.summary(market_prices))
+    
+    # 返回结果字典，用于生成综合报告
+    actual_start_date = start_date or available_dates[0]
+    actual_end_date = end_date or available_dates[-1]
+    
+    return {
+        'stock_code': stock_code,
+        'initial_cash': initial_cash,
+        'final_equity': equity,
+        'profit': profit,
+        'return_pct': return_pct,
+        'num_trades': len(account.trades),
+        'train_count': agent.train_count,
+        'leverage': leverage,
+        'data_range': f"{available_dates[0]} → {available_dates[-1]}",
+        # 保存账户和引擎信息，用于生成图表和详细指标
+        'account': account,
+        'engine': engine,
+        'market': market,
+        'start_date': actual_start_date,
+        'end_date': actual_end_date
+    }
+
+
+def logistic_strategy_with_risk_control_all_stocks(
+    stock_codes: Optional[List[str]] = None,
+    initial_cash: float = 1000000.0,
+    feature_names: list = None,
+    train_window_days: int = 252,
+    prediction_horizon: int = 5,
+    ret_threshold: float = 0.0,
+    retrain_frequency: int = 20,
+    max_position_weight: float = 0.5,
+    min_score_threshold: float = 0.0,
+    max_total_weight: float = 1.0,
+    train_test_split_ratio: float = 0.7,
+    max_leverage: float = 0.8,
+    start_date: str = None,
+    end_date: str = None
+):
+    """
+    对所有股票分别进行逻辑回归策略回测（带风险控制），生成综合报告
+    
+    Args:
+        stock_codes: 股票代码列表，如果为 None 则从 trader/config.toml 读取
+        其他参数同 logistic_strategy_with_risk_control_single
+    """
+    # 如果没有指定股票代码，从配置文件读取
+    if stock_codes is None:
+        stock_codes = get_test_stocks()
+    
+    for line in log_section("逻辑回归策略回测（增加投资比例 + 风险控制）- 多股票测试"):
+        logger.info(line)
+    logger.info(f"股票数量: {len(stock_codes)}")
+    logger.info(f"股票列表: {stock_codes}")
+    logger.info(f"初始资金: {initial_cash:,.2f} 元/股票")
+    logger.info(f"最大杠杆率: {max_leverage:.2f}")
+    logger.info("注意：每只股票使用独立的账户，分别测试")
+    logger.info("")
+    
+    # 运行所有股票的回测
+    results = []
+    for i, stock_code in enumerate(stock_codes, 1):
+        logger.info("")
+        logger.info(f"========== [{i}/{len(stock_codes)}] {stock_code} ==========")
+        
+        try:
+            result = logistic_strategy_with_risk_control_single(
+                stock_code=stock_code,
+                initial_cash=initial_cash,
+                feature_names=feature_names,
+                train_window_days=train_window_days,
+                prediction_horizon=prediction_horizon,
+                ret_threshold=ret_threshold,
+                retrain_frequency=retrain_frequency,
+                max_position_weight=max_position_weight,
+                min_score_threshold=min_score_threshold,
+                max_total_weight=max_total_weight,
+                train_test_split_ratio=train_test_split_ratio,
+                max_leverage=max_leverage,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            if result:
+                results.append(result)
+        except Exception as e:
+            logger.error(f"回测 {stock_code} 时出错: {e}", exc_info=True)
+            results.append({
+                'stock_code': stock_code,
+                'error': str(e)
+            })
+    
+    # 生成综合报告
+    logger.info("")
+    logger.info("")
+    for line in log_section("综合回测报告"):
+        logger.info(line)
+    
+    if results:
+        successful_results = [r for r in results if 'error' not in r]
+        
+        if successful_results:
+            total_profit = sum(r['profit'] for r in successful_results)
+            total_return = sum(r['return_pct'] for r in successful_results)
+            avg_return = total_return / len(successful_results)
+            total_initial_cash = sum(r['initial_cash'] for r in successful_results)
+            total_final_equity = sum(r['final_equity'] for r in successful_results)
+            total_trades = sum(r['num_trades'] for r in successful_results)
+            avg_leverage = sum(r.get('leverage', 0.0) for r in successful_results) / len(successful_results)
+            
+            logger.info(f"成功回测股票数: {len(successful_results)}/{len(stock_codes)}")
+            logger.info(f"总初始资金: {total_initial_cash:,.2f} 元")
+            logger.info(f"总最终权益: {total_final_equity:,.2f} 元")
+            logger.info(f"总盈亏: {total_profit:+,.2f} 元")
+            logger.info(f"平均收益率: {avg_return:+.2f}%")
+            logger.info(f"总交易次数: {total_trades}")
+            logger.info(f"平均杠杆率: {avg_leverage:.2f} (上限: {max_leverage:.2f})")
+            logger.info("")
+            
+            # 详细结果表格
+            logger.info("详细结果:")
+            logger.info(f"{'股票代码':<15} {'初始资金':>15} {'最终权益':>15} {'盈亏':>15} {'收益率':>10} {'交易次数':>8} {'杠杆率':>8}")
+            logger.info("-" * 100)
+            
+            for r in successful_results:
+                leverage = r.get('leverage', 0.0)
+                logger.info(
+                    f"{r['stock_code']:<15} "
+                    f"{r['initial_cash']:>15,.2f} "
+                    f"{r['final_equity']:>15,.2f} "
+                    f"{r['profit']:>+15,.2f} "
+                    f"{r['return_pct']:>+10.2f}% "
+                    f"{r['num_trades']:>8} "
+                    f"{leverage:>8.2f}"
+                )
+            
+            # 失败的结果
+            failed_results = [r for r in results if 'error' in r]
+            if failed_results:
+                logger.info("")
+                logger.info("失败的回测:")
+                for r in failed_results:
+                    logger.error(f"{r['stock_code']}: {r['error']}")
+            
+            # 生成综合报告文件
+            logger.info("")
+            logger.info("生成综合报告文件...")
+            
+            # 从结果中提取实际的日期范围
+            actual_start_date = start_date or "N/A"
+            actual_end_date = end_date or "N/A"
+            if successful_results and 'data_range' in successful_results[0]:
+                # 尝试从第一个结果的数据范围中提取日期
+                data_range = successful_results[0]['data_range']
+                if ' → ' in data_range:
+                    parts = data_range.split(' → ')
+                    if not start_date and len(parts) > 0:
+                        actual_start_date = parts[0].strip()
+                    if not end_date and len(parts) > 1:
+                        actual_end_date = parts[1].strip()
+            
+            # 获取实验文件夹名称作为输出目录名称
+            experiment_dir = Path(__file__).parent.name
+            from trader.config import PROJECT_ROOT
+            output_dir = PROJECT_ROOT / 'output' / 'backtest' / experiment_dir
+            # 不传入 title，直接使用 output_dir，避免创建子目录
+            report = BacktestReport(output_dir=output_dir, title=None)
+            
+            strategy_params = {
+                "train_window_days": train_window_days,
+                "prediction_horizon": prediction_horizon,
+                "ret_threshold": f"{ret_threshold:.2%}",
+                "retrain_frequency": f"每 {retrain_frequency} 个交易日",
+                "max_position_weight": f"{max_position_weight*100:.0f}%",
+                "min_score_threshold": min_score_threshold,
+                "max_total_weight": f"{max_total_weight*100:.0f}%",
+                "train_test_split_ratio": f"{train_test_split_ratio*100:.0f}%",
+                "max_leverage": f"{max_leverage:.2f}"
+            }
+            
+            report_file = report.generate_multi_stock_report(
+                results=results,
+                strategy_name="Logistic Regression Strategy (Higher Position + Risk Control)",
+                start_date=actual_start_date,
+                end_date=actual_end_date,
+                initial_cash_per_stock=initial_cash,
+                strategy_params=strategy_params
+            )
+            logger.info(f"综合报告已保存: {report_file}")
+        else:
+            logger.error("所有回测都失败了")
+    else:
+        logger.error("没有回测结果")
+    
+    logger.info(log_separator())
 
 
 if __name__ == "__main__":
-    # 执行逻辑回归策略（增加投资比例 + 风险控制）
-    logistic_strategy_with_risk_control(
-        stock_code="AAPL.O",
+    # 对所有 test 股票分别进行逻辑回归策略回测（带风险控制），生成综合报告
+    logistic_strategy_with_risk_control_all_stocks(
+        stock_codes=None,  # 从 trader/config.toml 读取
         initial_cash=1000000.0,
         feature_names=None,  # 使用默认特征
         train_window_days=252,  # 约1年交易日

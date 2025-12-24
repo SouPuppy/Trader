@@ -1,0 +1,2 @@
+[test]
+stocks = ["AAPL.O","MSFT.O","GOOGL.O","AMZN.O","NVDA.O","META.O","TSLA.O","AVGO.O","COST.O","CSCO.O"]

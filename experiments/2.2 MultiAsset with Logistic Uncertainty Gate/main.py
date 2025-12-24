@@ -1,7 +1,7 @@
 """
-多资产交易策略示例（使用 TurtleAgent）
-使用 MultiAssetTurtleAgent 对指定股票池中的股票分别使用独立的 TurtleAgent 获取信号
-然后使用 multiagent_weight_normalized 进行权重归一化
+多资产交易策略示例（使用 LogisticAgent with LLM Uncertainty Gate）
+使用 MultiAssetLogisticAgentWithLLMGate 对指定股票池中的股票分别使用独立的 LogisticAgentWithLLMGate 获取信号
+然后使用 LLM uncertainty gate 进行风险控制，最后进行权重归一化
 """
 import sys
 from pathlib import Path
@@ -12,7 +12,7 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from trader.agent.MultiAssetTurtleAgent import MultiAssetTurtleAgent
+from trader.agent.multiasset_logistic_with_llm_gate import MultiAssetLogisticAgentWithLLMGate
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
@@ -24,25 +24,28 @@ logger = get_logger(__name__)
 def multi_asset_strategy(
     stock_codes: Optional[List[str]] = None,
     initial_cash: float = 1000000.0,
-    max_position_weight: float = 0.4,  # 单个股票最大40%
-    min_score_threshold: float = 0.0,  # TurtleAgent 的 score 范围是 [-1, 1]
+    max_position_weight: float = 0.4,  # 单个股票最大40%（增加投资力度，方便风险控制）
+    min_score_threshold: float = 0.1,  # 提高阈值，只配置真正看好的股票（从0.0提高到0.1）
     max_total_weight: float = 1.0,  # 总仓位上限100%
-    # TurtleAgent 参数
-    entry_period: int = 20,  # 突破周期（N日最高/最低）
-    exit_period: int = 10,   # 退出周期
-    atr_period: int = 20,    # ATR计算周期
-    risk_per_trade: float = 0.02,  # 每次交易风险（账户资金的百分比）
-    stop_loss_atr: float = 2.0,   # 止损距离（ATR倍数）
-    max_positions: int = 4,       # 最大加仓次数
-    add_position_atr: float = 0.5,  # 加仓距离（ATR倍数）
+    train_window_days: int = 252,
+    prediction_horizon: int = 5,
+    ret_threshold: float = 0.0,
+    retrain_frequency: int = 20,
+    train_test_split_ratio: float = 0.7,
     start_date: str = None,
     end_date: str = None,
-    # 交易频率控制参数
-    min_trade_amount: float = 5000.0,  # 最小交易金额阈值
+    # 新增：交易频率控制参数
+    min_trade_amount: float = 5000.0,  # 最小交易金额阈值（从100元提高到5000元）
     min_weight_change: float = 0.05,  # 最小权重变化阈值（5%），避免微小调整
+    # LLM Gate 参数
+    apply_llm_gate: bool = True,  # 是否应用 LLM uncertainty gate 风险控制
+    llm_model: str = "deepseek-chat",  # LLM 模型名称
+    llm_temperature: float = 0.3,  # LLM 温度参数（控制随机性）
+    test_mode: bool = False,  # 测试模式，如果为 True，会打印更详细的调试信息
+    test_force_reject: bool = False,  # 测试模式下的强制拒绝
 ):
     """
-    多资产交易策略回测（使用 TurtleAgent）
+    多资产交易策略回测（带 LLM Uncertainty Gate 风险控制）
     
     Args:
         stock_codes: 股票代码列表，如果为 None 则使用默认股票池
@@ -50,19 +53,22 @@ def multi_asset_strategy(
         max_position_weight: 单个股票最大配置比例
         min_score_threshold: 最小 score 阈值
         max_total_weight: 总配置比例上限
-        entry_period: TurtleAgent 突破周期
-        exit_period: TurtleAgent 退出周期
-        atr_period: TurtleAgent ATR计算周期
-        risk_per_trade: TurtleAgent 每次交易风险
-        stop_loss_atr: TurtleAgent 止损距离（ATR倍数）
-        max_positions: TurtleAgent 最大加仓次数
-        add_position_atr: TurtleAgent 加仓距离（ATR倍数）
+        train_window_days: LogisticAgent 训练窗口大小
+        prediction_horizon: LogisticAgent 预测周期
+        ret_threshold: LogisticAgent 收益阈值
+        retrain_frequency: LogisticAgent 重新训练频率
+        train_test_split_ratio: LogisticAgent 训练/测试分割比例
         start_date: 开始日期
         end_date: 结束日期
         min_trade_amount: 最小交易金额阈值
         min_weight_change: 最小权重变化阈值
+        apply_llm_gate: 是否应用 LLM uncertainty gate 风险控制
+        llm_model: LLM 模型名称
+        llm_temperature: LLM 温度参数
+        test_mode: 测试模式
+        test_force_reject: 测试模式下的强制拒绝
     """
-    for line in log_section("多资产交易策略回测（Turtle）"):
+    for line in log_section("多资产交易策略回测（Logistic with LLM Uncertainty Gate）"):
         logger.info(line)
     
     # 初始化市场、账户和回测引擎
@@ -93,33 +99,40 @@ def multi_asset_strategy(
     logger.info(f"最小 score 阈值: {min_score_threshold:.2f}")
     logger.info(f"最小交易金额: {min_trade_amount:,.0f} 元")
     logger.info(f"最小权重变化阈值: {min_weight_change*100:.0f}%")
-    logger.info(f"Turtle 参数: entry={entry_period}, exit={exit_period}, ATR={atr_period}, risk={risk_per_trade*100:.1f}%")
     
-    # 生成报告标题
-    report_title = (
-        f"MultiAsset_Turtle_Strategy_"
-        f"{len(valid_stock_codes)}stocks_maxPos{max_position_weight*100:.0f}"
-    )
+    # LLM Gate 参数
+    if apply_llm_gate:
+        logger.info(f"LLM Uncertainty Gate: 启用")
+        logger.info(f"  - LLM 模型: {llm_model}")
+        logger.info(f"  - LLM 温度: {llm_temperature:.2f}")
+        logger.info(f"  - 测试模式: {test_mode}")
+    else:
+        logger.info(f"LLM Uncertainty Gate: 禁用")
+    
+    # 生成报告标题（与实验名称对齐）
+    report_title = "2.2 MultiAsset with Logistic Uncertainty Gate"
     engine = BacktestEngine(
         account, market,
         report_title=report_title,
-        train_test_split_ratio=0.0  # Turtle 策略不需要训练/测试分割
+        train_test_split_ratio=train_test_split_ratio
     )
     
-    # 创建多资产交易代理（使用 TurtleAgent）
-    agent = MultiAssetTurtleAgent(
+    # 创建多资产交易代理（使用 LogisticAgentWithLLMGate）
+    agent = MultiAssetLogisticAgentWithLLMGate(
         stock_codes=valid_stock_codes,
-        name="MultiAsset_Turtle",
+        name="MultiAsset_Logistic_LLMGate",
         max_position_weight=max_position_weight,
         min_score_threshold=min_score_threshold,
         max_total_weight=max_total_weight,
-        entry_period=entry_period,
-        exit_period=exit_period,
-        atr_period=atr_period,
-        risk_per_trade=risk_per_trade,
-        stop_loss_atr=stop_loss_atr,
-        max_positions=max_positions,
-        add_position_atr=add_position_atr,
+        train_window_days=train_window_days,
+        prediction_horizon=prediction_horizon,
+        ret_threshold=ret_threshold,
+        retrain_frequency=retrain_frequency,
+        train_test_split_ratio=train_test_split_ratio,
+        llm_model=llm_model,
+        llm_temperature=llm_temperature,
+        test_mode=test_mode,
+        test_force_reject=test_force_reject,
         use_parallel=False,  # 禁用并行计算
         max_workers=None
     )
@@ -143,8 +156,11 @@ def multi_asset_strategy(
         # 更新 agent 状态
         agent.on_date(eng, date)
         
-        # 获取所有股票的归一化权重
-        weights = agent.get_all_weights(eng)
+        # 获取所有股票的归一化权重（应用 LLM uncertainty gate）
+        weights = agent.get_all_weights(
+            eng,
+            apply_llm_gate=apply_llm_gate
+        )
         
         # 获取账户权益
         account_equity = account.equity(market_prices)
@@ -197,6 +213,9 @@ def multi_asset_strategy(
         logger.info("开始回测...")
         engine.run(valid_stock_codes[0], start_date=start_date, end_date=end_date)
         
+        if engine.train_test_split_date:
+            logger.info(f"训练/测试分割日期: {engine.train_test_split_date}")
+        
         # 计算最终结果
         final_prices = {}
         for stock_code in valid_stock_codes:
@@ -228,29 +247,92 @@ def multi_asset_strategy(
             # 输出详细账户摘要
             logger.info("")
             logger.info(account.summary(final_prices))
+            
+            # 输出 LLM Gate 统计信息
+            if apply_llm_gate:
+                logger.info("")
+                for line in log_section("LLM Gate 统计信息"):
+                    logger.info(line)
+                gate_stats = agent.get_gate_stats()
+                total_passed = 0
+                total_skipped = 0
+                for stock_code, stats in gate_stats.items():
+                    passed = stats.get("gate_passed_count", 0)
+                    skipped = stats.get("gate_skipped_count", 0)
+                    total = stats.get("total_evaluations", 0)
+                    total_passed += passed
+                    total_skipped += skipped
+                    if total > 0:
+                        logger.info(
+                            f"{stock_code}: 通过={passed}, 拒绝={skipped}, "
+                            f"总计={total}, 拒绝率={skipped/total*100:.1f}%"
+                        )
+                total_evaluations = total_passed + total_skipped
+                if total_evaluations > 0:
+                    logger.info(
+                        f"总计: 通过={total_passed}, 拒绝={total_skipped}, "
+                        f"总计={total_evaluations}, 拒绝率={total_skipped/total_evaluations*100:.1f}%"
+                    )
+                logger.info(log_separator())
+            
+            # 生成多资产组合报告
+            if engine.report:
+                logger.info("")
+                logger.info("生成多资产组合报告...")
+                strategy_params = {
+                    "max_position_weight": f"{max_position_weight*100:.0f}%",
+                    "min_score_threshold": f"{min_score_threshold:.2f}",
+                    "max_total_weight": f"{max_total_weight*100:.0f}%",
+                    "train_window_days": train_window_days,
+                    "prediction_horizon": prediction_horizon,
+                    "ret_threshold": ret_threshold,
+                    "retrain_frequency": retrain_frequency,
+                    "min_trade_amount": f"{min_trade_amount:,.0f} 元",
+                    "min_weight_change": f"{min_weight_change*100:.0f}%"
+                }
+                
+                # 添加 LLM Gate 参数
+                if apply_llm_gate:
+                    strategy_params["apply_llm_gate"] = "启用"
+                    strategy_params["llm_model"] = llm_model
+                    strategy_params["llm_temperature"] = f"{llm_temperature:.2f}"
+                else:
+                    strategy_params["apply_llm_gate"] = "禁用"
+                
+                report_file = engine.report.generate_multi_asset_report(
+                    account=account,
+                    stock_codes=valid_stock_codes,
+                    start_date=start_date or engine.trading_dates[0] if engine.trading_dates else "N/A",
+                    end_date=end_date or engine.trading_dates[-1] if engine.trading_dates else "N/A",
+                    strategy_params=strategy_params
+                )
+                logger.info(f"多资产组合报告已保存: {report_file}")
 
 
 if __name__ == "__main__":
-    # 执行多资产交易策略（使用 TurtleAgent）
+    # 执行多资产交易策略（带 LLM Uncertainty Gate 风险控制）
     # 默认使用指定的5支股票：AAPL.O, AMZN.O, ASML.O, META.O, MRNA.O
     multi_asset_strategy(
         stock_codes=["AAPL.O", "AMZN.O", "ASML.O", "META.O", "MRNA.O"],
         initial_cash=1000000.0,
         max_position_weight=0.4,  # 单个股票最大40%
-        min_score_threshold=0.0,  # TurtleAgent 的 score 范围是 [-1, 1]
+        min_score_threshold=0.05,  # 降低阈值到0.05，增加交易机会（使用平方映射，低score仓位仍然较小）
         max_total_weight=1.0,  # 总仓位上限100%
-        # TurtleAgent 参数
-        entry_period=20,  # 突破周期
-        exit_period=10,   # 退出周期
-        atr_period=20,    # ATR计算周期
-        risk_per_trade=0.02,  # 每次交易风险2%
-        stop_loss_atr=2.0,   # 止损距离（2倍ATR）
-        max_positions=4,       # 最大加仓次数
-        add_position_atr=0.5,  # 加仓距离（0.5倍ATR）
+        train_window_days=252,
+        prediction_horizon=5,
+        ret_threshold=0.0,
+        retrain_frequency=20,
+        train_test_split_ratio=0.7,
         start_date=None,
         end_date=None,
         # 优化参数：减少频繁交易
         min_trade_amount=5000.0,  # 最小交易金额5000元
-        min_weight_change=0.05,  # 权重变化至少5%才交易
+        min_weight_change=0.05,  # 权重变化至少5%才交易（避免微小调整）
+        # LLM Gate 参数
+        apply_llm_gate=True,  # 启用 LLM uncertainty gate 风险控制
+        llm_model="deepseek-chat",  # LLM 模型名称
+        llm_temperature=0.3,  # LLM 温度参数（控制随机性）
+        test_mode=False,  # 测试模式
+        test_force_reject=False,  # 测试模式下的强制拒绝
     )
 

@@ -26,6 +26,30 @@ class Market:
             raise FileNotFoundError(f"数据库文件不存在: {DB_PATH}")
         self.db_path = DB_PATH
         self.price_adjustment = price_adjustment
+        # 复用单个 SQLite 连接，避免在回测中频繁 connect/close 造成性能问题
+        self._conn: Optional[sqlite3.Connection] = None
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """获取（或创建）SQLite 连接。"""
+        if self._conn is None:
+            # 只读查询为主；复用连接可显著降低回测耗时
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        return self._conn
+
+    def close(self) -> None:
+        """关闭数据库连接（可选调用）。"""
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            finally:
+                self._conn = None
+
+    def __del__(self):
+        # 尽力回收连接（解释器退出阶段不保证一定被调用）
+        try:
+            self.close()
+        except Exception:
+            pass
     
     def get_price(self, stock_code: str, date: Optional[str] = None) -> Optional[float]:
         """
@@ -39,7 +63,7 @@ class Market:
             Optional[float]: 收盘价，如果不存在则返回 None
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             
             if date:
                 query = """
@@ -61,13 +85,13 @@ class Market:
                 cursor = conn.execute(query, (stock_code,))
             
             row = cursor.fetchone()
-            conn.close()
             
             if row and row[0] is not None:
                 price = float(row[0]) * self.price_adjustment
                 return price
             else:
-                logger.warning(f"未找到价格数据: stock_code={stock_code}, date={date}")
+                # 在回测中此函数会被高频调用；缺失数据的日志用 debug 避免刷屏
+                logger.debug(f"未找到价格数据: stock_code={stock_code}, date={date}")
                 return None
                 
         except sqlite3.Error as e:
@@ -88,7 +112,7 @@ class Market:
             pd.DataFrame: 包含 datetime, close_price 等字段的数据框
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             
             query = """
                 SELECT 
@@ -116,7 +140,6 @@ class Market:
             query += " ORDER BY datetime ASC"
             
             df = pd.read_sql_query(query, conn, params=tuple(params))
-            conn.close()
             
             if not df.empty and 'datetime' in df.columns:
                 df['datetime'] = pd.to_datetime(df['datetime'])
@@ -138,7 +161,7 @@ class Market:
             List[str]: 日期列表（格式: YYYY-MM-DD）
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             
             query = """
                 SELECT DISTINCT datetime
@@ -149,7 +172,6 @@ class Market:
             
             cursor = conn.execute(query, (stock_code,))
             dates = [row[0] for row in cursor.fetchall()]
-            conn.close()
             
             return dates
             
@@ -165,7 +187,7 @@ class Market:
             List[str]: 股票代码列表
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             
             query = """
                 SELECT DISTINCT stock_code
@@ -175,7 +197,6 @@ class Market:
             
             cursor = conn.execute(query)
             symbols = [row[0] for row in cursor.fetchall()]
-            conn.close()
             
             return symbols
             

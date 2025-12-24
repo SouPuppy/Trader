@@ -1,6 +1,12 @@
 """
-海龟策略（Turtle Trading Strategy）回测示例
-使用 TurtleAgent 实现海龟策略
+Chasing Extremes Agent 回测示例
+这是一个"疯狂的" agent，用于测试 risk control 是否有用
+
+策略逻辑：
+- 当价格出现极端波动（大涨或大跌）时，会全仓追逐这个趋势
+- 追涨：当价格大幅上涨时，全仓买入
+- 追跌：当价格大幅下跌时，全仓卖出
+- 没有风险控制，会全仓或大仓位买入/卖出
 对 trader/config.toml 中的所有股票分别进行单股票回测，生成综合报告
 """
 import sys
@@ -12,7 +18,7 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from trader.agent.agent_turtle import TurtleAgent
+from trader.agent.agent_chasing_extremes import ChasingExtremesAgent
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.engine import BacktestEngine
@@ -23,44 +29,47 @@ from trader.logger import get_logger, log_separator, log_section
 logger = get_logger(__name__)
 
 
-def turtle_strategy_single(
-    stock_code: str,
-    initial_cash: float = 1000000.0,
-    entry_period: int = 20,
-    exit_period: int = 10,
-    atr_period: int = 20,
-    risk_per_trade: float = 0.02,
-    stop_loss_atr: float = 2.0,
-    max_positions: int = 4,
-    add_position_atr: float = 0.5,
+def chasing_extremes_backtest_single(
+    stock_code: str = "AAPL.O",
+    initial_cash: float = 1_000_000.0,
+    extreme_threshold: float = 0.05,  # 极端波动阈值（5%）
+    lookback_days: int = 1,  # 回看天数
+    max_position_weight: float = 1.0,  # 最大仓位（全仓）
+    chase_up: bool = True,  # 是否追涨
+    chase_down: bool = True,  # 是否追跌
     start_date: str = None,
     end_date: str = None
 ) -> Optional[Dict]:
     """
-    海龟策略单股票回测（使用 TurtleAgent）
+    Chasing Extremes Agent 回测
     
     Args:
         stock_code: 股票代码
         initial_cash: 初始资金
-        entry_period: 突破周期
-        exit_period: 退出周期
-        atr_period: ATR计算周期
-        risk_per_trade: 每次交易风险（账户资金的百分比）
-        stop_loss_atr: 止损距离（ATR倍数）
-        max_positions: 最大加仓次数
-        add_position_atr: 加仓距离（ATR倍数）
+        extreme_threshold: 极端波动阈值（如 0.05 表示 5%）
+        lookback_days: 回看天数，用于计算涨跌幅
+        max_position_weight: 最大仓位（默认全仓）
+        chase_up: 是否追涨（价格大涨时买入）
+        chase_down: 是否追跌（价格大跌时卖出）
         start_date: 开始日期
         end_date: 结束日期
-    
-    Returns:
-        回测结果字典，如果失败则返回 None
     """
+    for line in log_section("Chasing Extremes Strategy Backtest"):
+        logger.info(line)
+    logger.info(f"股票代码: {stock_code}")
+    logger.info(f"初始资金: {initial_cash:,.2f} 元")
+    logger.info(f"极端波动阈值: {extreme_threshold*100:.1f}%")
+    logger.info(f"回看天数: {lookback_days} 天")
+    logger.info(f"最大仓位: {max_position_weight*100:.0f}%")
+    logger.info(f"追涨: {chase_up}")
+    logger.info(f"追跌: {chase_down}")
+    
     # 初始化市场、账户和回测引擎（每只股票独立的账户）
     market = Market(price_adjustment=0.01)
     account = Account(initial_cash=initial_cash)
     
     # 启用报告生成以记录每日状态，但不生成独立报告文件（通过设置 report_title=None）
-    # 海龟策略不需要训练，使用所有数据（train_test_split_ratio=0.0）
+    # Chasing Extremes 策略不需要训练，使用所有数据（train_test_split_ratio=0.0）
     engine = BacktestEngine(account, market, enable_report=True, report_title=None, train_test_split_ratio=0.0)
     
     # 获取可用日期
@@ -69,38 +78,104 @@ def turtle_strategy_single(
         logger.error(f"未找到股票 {stock_code} 的数据")
         return None
     
-    # 创建海龟策略 Agent
-    agent = TurtleAgent(
-        name="Turtle_Strategy",
-        entry_period=entry_period,
-        exit_period=exit_period,
-        atr_period=atr_period,
-        risk_per_trade=risk_per_trade,
-        stop_loss_atr=stop_loss_atr,
-        max_positions=max_positions,
-        add_position_atr=add_position_atr
+    logger.info(f"数据范围: {available_dates[0]} 至 {available_dates[-1]}")
+    
+    # 创建 Chasing Extremes Agent
+    agent = ChasingExtremesAgent(
+        name="ChasingExtremes",
+        extreme_threshold=extreme_threshold,
+        lookback_days=lookback_days,
+        max_position_weight=max_position_weight,
+        chase_up=chase_up,
+        chase_down=chase_down
     )
     
-    # 设置要交易的股票代码
-    agent.set_trading_stocks([stock_code])
-    
-    # 注册交易日回调：调用 agent 的 on_date 方法执行策略
+    # 注册交易日回调：执行策略
     def on_trading_day(eng: BacktestEngine, date: str):
         """每个交易日的回调"""
+        # 更新 agent 状态
         agent.on_date(eng, date)
+        
+        # 获取当前股票的 score
+        score = agent.score(stock_code, eng)
+        
+        # 计算权重
+        weight = agent.weight(stock_code, score, eng)
+        
+        # 如果权重为0，检查是否需要卖出
+        if weight == 0.0:
+            position = account.get_position(stock_code)
+            if position and position['shares'] > 0:
+                # 如果 score < 0（追跌信号），卖出所有持仓
+                if score < 0:
+                    eng.sell(stock_code, shares=position['shares'])
+                    logger.debug(f"[{date}] 追跌卖出 {stock_code}: {position['shares']} 股")
+            return
+        
+        # 获取账户权益
+        market_prices = eng.get_market_prices([stock_code])
+        account_equity = account.equity(market_prices)
+        
+        # 计算目标持仓金额
+        target_value = account_equity * weight
+        
+        # 获取当前持仓
+        position = account.get_position(stock_code)
+        current_value = 0.0
+        current_price = eng.get_current_price(stock_code)
+        if position and current_price:
+            current_value = position['shares'] * current_price
+        
+        # 计算需要调整的金额
+        diff_value = target_value - current_value
+        
+        # 降低交易阈值，让它更频繁地交易（稳定亏钱）
+        # 即使变化很小，只要有信号就交易
+        min_trade_amount = 1000  # 最小交易金额（降低到1000元）
+        if abs(diff_value) < min_trade_amount and weight > 0:
+            # 如果权重>0但金额变化小，强制买入至少最小金额
+            if diff_value > 0:
+                diff_value = min_trade_amount
+            else:
+                # 卖出至少最小金额对应的股数
+                if current_price and current_price > 0:
+                    diff_value = -min_trade_amount
+        
+        # 执行交易
+        if diff_value > min_trade_amount:
+            # 买入
+            eng.buy(stock_code, amount=diff_value)
+            logger.info(
+                f"[{date}] 追涨买入 {stock_code}: {diff_value:,.2f} 元 @ {current_price:.2f}, "
+                f"score={score:.3f}, weight={weight:.3f}"
+            )
+        elif diff_value < -min_trade_amount:
+            # 卖出
+            shares_to_sell = int(abs(diff_value) / current_price) if current_price else 0
+            if shares_to_sell > 0 and position:
+                shares_to_sell = min(shares_to_sell, position['shares'])
+                if shares_to_sell > 0:
+                    eng.sell(stock_code, shares=shares_to_sell)
+                    logger.info(
+                        f"[{date}] 追跌卖出 {stock_code}: {shares_to_sell} 股 @ {current_price:.2f}, "
+                        f"score={score:.3f}, weight={weight:.3f}"
+                    )
     
     engine.on_date(on_trading_day)
     
     # 运行回测
+    logger.info("")
+    logger.info("开始回测...")
     engine.run(stock_code, start_date=start_date, end_date=end_date)
     
     # 计算最终结果
-    final_price = market.get_price(stock_code, end_date if end_date else available_dates[-1])
+    final_date = end_date if end_date else available_dates[-1]
+    final_price = market.get_price(stock_code, final_date)
     if final_price is None:
         final_price = market.get_price(stock_code)
     
     if final_price is None:
-        logger.error(f"无法获取 {stock_code} 的最终价格")
+        logger.error("无法获取最终价格")
         return None
     
     market_prices = {stock_code: final_price}
@@ -115,7 +190,7 @@ def turtle_strategy_single(
         'profit': profit,
         'return_pct': return_pct,
         'num_trades': len(account.trades),
-        'data_range': f"{available_dates[0]} 至 {available_dates[-1]}",
+        'data_range': f"{available_dates[0]} → {available_dates[-1]}",
         # 保存账户和引擎信息，用于生成图表和详细指标
         'account': account,
         'engine': engine,
@@ -125,41 +200,38 @@ def turtle_strategy_single(
     }
 
 
-def turtle_strategy_all_stocks(
+def chasing_extremes_backtest_all_stocks(
     stock_codes: Optional[List[str]] = None,
-    initial_cash: float = 1000000.0,
-    entry_period: int = 20,
-    exit_period: int = 10,
-    atr_period: int = 20,
-    risk_per_trade: float = 0.02,
-    stop_loss_atr: float = 2.0,
-    max_positions: int = 4,
-    add_position_atr: float = 0.5,
+    initial_cash: float = 1_000_000.0,
+    extreme_threshold: float = 0.01,
+    lookback_days: int = 1,
+    max_position_weight: float = 1.0,
+    chase_up: bool = True,
+    chase_down: bool = True,
     start_date: str = None,
     end_date: str = None
 ):
     """
-    海龟策略多股票回测（对每只股票分别进行单股票回测，生成综合报告）
+    对所有股票分别进行 Chasing Extremes 回测，生成综合报告
     
     Args:
         stock_codes: 股票代码列表，如果为 None 则从 trader/config.toml 读取
-        其他参数同 turtle_strategy_single
+        其他参数同 chasing_extremes_backtest_single
     """
     # 如果没有指定股票代码，从配置文件读取
     if stock_codes is None:
         stock_codes = get_test_stocks()
     
-    for line in log_section("海龟策略回测 - 多股票单股票测试"):
+    for line in log_section("Chasing Extremes Strategy Backtest - 多股票单股票测试"):
         logger.info(line)
     logger.info(f"股票数量: {len(stock_codes)}")
     logger.info(f"股票列表: {stock_codes}")
     logger.info(f"初始资金: {initial_cash:,.2f} 元/股票")
-    logger.info(f"突破周期: {entry_period} 天")
-    logger.info(f"退出周期: {exit_period} 天")
-    logger.info(f"ATR周期: {atr_period} 天")
-    logger.info(f"风险比例: {risk_per_trade*100:.1f}%")
-    logger.info(f"止损距离: {stop_loss_atr} ATR")
-    logger.info(f"最大加仓次数: {max_positions}")
+    logger.info(f"极端波动阈值: {extreme_threshold*100:.1f}%")
+    logger.info(f"回看天数: {lookback_days} 天")
+    logger.info(f"最大仓位: {max_position_weight*100:.0f}%")
+    logger.info(f"追涨: {chase_up}")
+    logger.info(f"追跌: {chase_down}")
     logger.info("注意：每只股票使用独立的账户，分别测试")
     logger.info("")
     
@@ -170,16 +242,14 @@ def turtle_strategy_all_stocks(
         logger.info(f"========== [{i}/{len(stock_codes)}] {stock_code} ==========")
         
         try:
-            result = turtle_strategy_single(
+            result = chasing_extremes_backtest_single(
                 stock_code=stock_code,
                 initial_cash=initial_cash,
-                entry_period=entry_period,
-                exit_period=exit_period,
-                atr_period=atr_period,
-                risk_per_trade=risk_per_trade,
-                stop_loss_atr=stop_loss_atr,
-                max_positions=max_positions,
-                add_position_atr=add_position_atr,
+                extreme_threshold=extreme_threshold,
+                lookback_days=lookback_days,
+                max_position_weight=max_position_weight,
+                chase_up=chase_up,
+                chase_down=chase_down,
                 start_date=start_date,
                 end_date=end_date
             )
@@ -200,7 +270,6 @@ def turtle_strategy_all_stocks(
         logger.info(line)
     
     if results:
-        # 计算统计信息
         successful_results = [r for r in results if 'error' not in r]
         
         if successful_results:
@@ -250,10 +319,9 @@ def turtle_strategy_all_stocks(
             actual_start_date = start_date or "N/A"
             actual_end_date = end_date or "N/A"
             if successful_results and 'data_range' in successful_results[0]:
-                # 尝试从第一个结果的数据范围中提取日期
                 data_range = successful_results[0]['data_range']
-                if ' 至 ' in data_range:
-                    parts = data_range.split(' 至 ')
+                if ' → ' in data_range:
+                    parts = data_range.split(' → ')
                     if not start_date and len(parts) > 0:
                         actual_start_date = parts[0].strip()
                     if not end_date and len(parts) > 1:
@@ -263,22 +331,19 @@ def turtle_strategy_all_stocks(
             experiment_dir = Path(__file__).parent.name
             from trader.config import PROJECT_ROOT
             output_dir = PROJECT_ROOT / 'output' / 'backtest' / experiment_dir
-            # 不传入 title，直接使用 output_dir，避免创建子目录
             report = BacktestReport(output_dir=output_dir, title=None)
             
             strategy_params = {
-                "entry_period": entry_period,
-                "exit_period": exit_period,
-                "atr_period": atr_period,
-                "risk_per_trade": f"{risk_per_trade*100:.1f}%",
-                "stop_loss_atr": stop_loss_atr,
-                "max_positions": max_positions,
-                "add_position_atr": add_position_atr
+                "extreme_threshold": f"{extreme_threshold*100:.1f}%",
+                "lookback_days": lookback_days,
+                "max_position_weight": f"{max_position_weight*100:.0f}%",
+                "chase_up": chase_up,
+                "chase_down": chase_down
             }
             
             report_file = report.generate_multi_stock_report(
                 results=results,
-                strategy_name="Turtle Strategy",
+                strategy_name="Chasing Extremes Strategy",
                 start_date=actual_start_date,
                 end_date=actual_end_date,
                 initial_cash_per_stock=initial_cash,
@@ -294,18 +359,15 @@ def turtle_strategy_all_stocks(
 
 
 if __name__ == "__main__":
-    # 执行海龟策略（对所有股票分别进行单股票回测）
-    # 海龟策略不需要训练，使用完整的12个月数据
-    turtle_strategy_all_stocks(
+    # 对所有股票分别进行 Chasing Extremes 回测，生成综合报告
+    chasing_extremes_backtest_all_stocks(
         stock_codes=None,  # 从 trader/config.toml 读取
-        initial_cash=1000000.0,
-        entry_period=20,
-        exit_period=10,
-        atr_period=20,
-        risk_per_trade=0.02,
-        stop_loss_atr=2.0,
-        max_positions=4,
-        add_position_atr=0.5,
+        initial_cash=1_000_000.0,
+        extreme_threshold=0.01,  # 1% 极端波动阈值（降低阈值，让它更容易触发）
+        lookback_days=1,  # 回看1天
+        max_position_weight=1.0,  # 全仓
+        chase_up=True,  # 追涨（买在高点）
+        chase_down=True,  # 追跌（卖在低点）
         start_date="2023-01-01",
         end_date="2023-12-31"
     )

@@ -100,6 +100,7 @@ class BacktestEngine:
         self.train_test_split_ratio = train_test_split_ratio
         self.train_test_split_date: Optional[str] = None  # 训练/测试分割日期（在 run 时计算）
         self.only_test_period = only_test_period  # 是否只运行测试期
+        self.report_title = report_title  # 保存 report_title，用于判断是否生成报告文件
         self.report: Optional[BacktestReport] = None
         if enable_report:
             self.report = BacktestReport(report_output_dir, title=report_title)
@@ -343,8 +344,9 @@ class BacktestEngine:
         
         logger.info(f"回测完成: {len(self.trading_dates)} 个交易日")
         
-        # 生成报告
-        if self.enable_report and self.report:
+        # 生成报告（只有当 report_title 不为 None 时才生成报告文件）
+        # 如果 report_title 为 None，只记录 daily_records，不生成报告文件
+        if self.enable_report and self.report and self.report_title is not None:
             try:
                 # 提取所有交易过的股票代码（用于多资产回测）
                 all_traded_stocks = set()
