@@ -14,7 +14,10 @@ if str(project_root) not in sys.path:
 from trader.rag.types import (
     RagRequest, RetrievalPlan, Candidate, EvidencePack, VerifiedAnswer, DocType
 )
+from trader.rag.calculate_trends import calculate_trends_statistics
+from trader.rag.normalize_citations import extract_citations
 from trader.logger import get_logger
+from datetime import datetime
 
 logger = get_logger(__name__)
 
@@ -100,6 +103,14 @@ def log_all(
         for violation in verified.violations:
             logger.warning(f"  - {violation}")
     
+    # Log actionable KPIs
+    logger.info("=" * 80)
+    logger.info("Actionable KPIs")
+    logger.info("=" * 80)
+    kpis = calculate_kpis(request, plan, ranked, evidence, verified)
+    for kpi_name, kpi_value in kpis.items():
+        logger.info(f"{kpi_name}: {kpi_value}")
+    
     logger.info("=" * 80)
 
 
@@ -162,10 +173,100 @@ def log_metrics(
 def _calculate_days(time_start: str, time_end: str) -> float:
     """Calculate time window in days"""
     try:
-        from datetime import datetime
         start = datetime.fromisoformat(time_start.replace('Z', '+00:00'))
         end = datetime.fromisoformat(time_end.replace('Z', '+00:00'))
         return (end - start).days
     except Exception:
         return 0.0
+
+
+def calculate_kpis(
+    request: RagRequest,
+    plan: RetrievalPlan,
+    ranked: Dict[DocType, List[Candidate]],
+    evidence: EvidencePack,
+    verified: VerifiedAnswer
+) -> Dict[str, any]:
+    """
+    Calculate actionable KPIs for monitoring and improvement
+    
+    Returns:
+        Dictionary of KPI name -> value
+    """
+    kpis = {}
+    
+    # 1. Coverage days (trends coverage)
+    trends_items = [item for item in evidence.items if item.doc_type == "trends"]
+    if trends_items:
+        trends_stats = calculate_trends_statistics(evidence)
+        date_range = trends_stats.get("date_range", {})
+        coverage_days = date_range.get("days", 0)
+        requested_days = _calculate_days(plan.time_start, plan.time_end)
+        coverage_rate = (coverage_days / requested_days * 100) if requested_days > 0 else 0
+        kpis["coverage_days"] = f"{coverage_days}/{requested_days:.0f} days ({coverage_rate:.1f}%)"
+    else:
+        kpis["coverage_days"] = "0/0 days (0%)"
+    
+    # 2. News relevance rate (news items for the stock vs total)
+    news_items = [item for item in evidence.items if item.doc_type == "news_piece"]
+    if news_items:
+        relevant_news = sum(1 for item in news_items if item.stock_code == request.stock_code)
+        news_relevance_rate = (relevant_news / len(news_items) * 100) if news_items else 0
+        kpis["news_relevance_rate"] = f"{relevant_news}/{len(news_items)} ({news_relevance_rate:.1f}%)"
+    else:
+        kpis["news_relevance_rate"] = "N/A (no news)"
+    
+    # 3. Citation valid rate (most important KPI)
+    # Extract citations from verified answer
+    citations = extract_citations(verified.answer)
+    valid_citations = []
+    invalid_citations = []
+    
+    # Build citation to doc_id mapping
+    citation_to_doc_id = {}
+    for item in evidence.items:
+        timestamp_date = item.timestamp[:10] if len(item.timestamp) >= 10 else item.timestamp
+        citation_format = f"[DOC:{item.doc_type}:{item.stock_code}:{timestamp_date}]"
+        citation_to_doc_id[citation_format] = item.doc_id
+    
+    valid_doc_ids = {item.doc_id for item in evidence.items}
+    
+    for citation in citations:
+        if citation in citation_to_doc_id:
+            doc_id = citation_to_doc_id[citation]
+            if doc_id in valid_doc_ids:
+                valid_citations.append(citation)
+            else:
+                invalid_citations.append(citation)
+        else:
+            invalid_citations.append(citation)
+    
+    total_citations = len(citations)
+    valid_citation_count = len(valid_citations)
+    citation_valid_rate = (valid_citation_count / total_citations * 100) if total_citations > 0 else 100.0
+    kpis["citation_valid_rate"] = f"{valid_citation_count}/{total_citations} ({citation_valid_rate:.1f}%)"
+    
+    if invalid_citations:
+        kpis["invalid_citations"] = f"{len(invalid_citations)} invalid: {invalid_citations[:3]}..."
+    
+    # 4. Degrade rate (how often we degrade due to missing evidence)
+    degrade_rate = 100.0 if verified.mode == "degraded" else 0.0
+    kpis["degrade_rate"] = f"{degrade_rate:.1f}%"
+    
+    # 5. Evidence sufficiency by task type
+    evidence_by_type = {}
+    for item in evidence.items:
+        doc_type = item.doc_type
+        evidence_by_type[doc_type] = evidence_by_type.get(doc_type, 0) + 1
+    
+    if plan.task_type == "trade_explain":
+        trade_history_count = evidence_by_type.get("trade_history", 0)
+        kpis["trade_history_count"] = trade_history_count
+        kpis["trade_explain_sufficient"] = "Yes" if trade_history_count > 0 else "No (degraded)"
+    elif plan.task_type == "news_impact":
+        news_count = evidence_by_type.get("news_piece", 0)
+        kpis["news_count"] = news_count
+        kpis["news_impact_sufficient"] = "Yes" if news_count >= 2 else f"No (need 2+, have {news_count})"
+    
+    return kpis
 

@@ -68,12 +68,19 @@ def rerank(plan: RetrievalPlan, candidates: List[Candidate]) -> Dict[DocType, Li
         # Sort by score
         scored_cands.sort(key=lambda x: x[1], reverse=True)
         
+        # Time-aware selection for trends (to maximize temporal coverage)
+        if doc_type == "trends":
+            scored_cands = _apply_time_bucketed_selection(scored_cands, need.final_k)
+            # Time-bucketed selection already returns final_k items, so use directly
+            final_cands = [cand for cand, _ in scored_cands]
         # Diversity filter (for news_piece)
-        if doc_type == "news_piece":
+        elif doc_type == "news_piece":
             scored_cands = _apply_diversity_filter(scored_cands, plan)
-        
-        # Take top-k
-        final_cands = [cand for cand, _ in scored_cands[:need.final_k]]
+            # Take top-k after diversity filter
+            final_cands = [cand for cand, _ in scored_cands[:need.final_k]]
+        else:
+            # Take top-k for other types
+            final_cands = [cand for cand, _ in scored_cands[:need.final_k]]
         ranked[doc_type] = final_cands
         
         logger.info(f"{doc_type} rerank: {len(cands)} -> {len(final_cands)}")
@@ -130,6 +137,88 @@ def _calculate_quality_score(candidate: Candidate, doc_type: DocType) -> float:
         return 0.5
     
     return 0.5
+
+
+def _apply_time_bucketed_selection(
+    scored_cands: List[tuple], 
+    final_k: int,
+    buckets: int = 5
+) -> List[tuple]:
+    """
+    Apply time-bucketed selection for trends to maximize temporal coverage
+    
+    Strategy:
+    1. Sort by date descending (most recent first)
+    2. Divide into time buckets
+    3. Select best-scored item from each bucket
+    4. Fill remaining slots with most recent items not yet selected
+    
+    Args:
+        scored_cands: List of (candidate, score) tuples
+        final_k: Target number of final candidates
+        buckets: Number of time buckets
+        
+    Returns:
+        Selected candidates with time diversity
+    """
+    if len(scored_cands) <= final_k:
+        return scored_cands
+    
+    # Sort by date descending (most recent first)
+    try:
+        from datetime import datetime
+        
+        def get_date(cand_score_tuple):
+            cand, _ = cand_score_tuple
+            try:
+                return datetime.fromisoformat(cand.doc.timestamp.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                return datetime.min
+        
+        scored_cands_sorted = sorted(scored_cands, key=get_date, reverse=True)
+    except Exception:
+        # If date parsing fails, fall back to score-based selection
+        logger.warning("Failed to parse dates for time-bucketed selection, using score-based")
+        return scored_cands[:final_k]
+    
+    # Divide into time buckets
+    selected = []
+    seen_doc_ids = set()
+    
+    if len(scored_cands_sorted) > 0:
+        span = max(1, len(scored_cands_sorted) // buckets)
+        
+        # Select best-scored item from each bucket
+        for i in range(buckets):
+            start_idx = i * span
+            end_idx = min((i + 1) * span, len(scored_cands_sorted))
+            chunk = scored_cands_sorted[start_idx:end_idx]
+            
+            if not chunk:
+                continue
+            
+            # Pick best-scored in this bucket
+            best = max(chunk, key=lambda x: x[1])
+            cand, score = best
+            
+            if cand.doc.doc_id not in seen_doc_ids:
+                selected.append((cand, score))
+                seen_doc_ids.add(cand.doc.doc_id)
+                
+                if len(selected) >= final_k:
+                    break
+        
+        # Fill remaining slots with most recent items not yet selected
+        if len(selected) < final_k:
+            for cand, score in scored_cands_sorted:
+                if cand.doc.doc_id not in seen_doc_ids:
+                    selected.append((cand, score))
+                    seen_doc_ids.add(cand.doc.doc_id)
+                    if len(selected) >= final_k:
+                        break
+    
+    logger.debug(f"Time-bucketed selection: {len(scored_cands)} -> {len(selected)} candidates")
+    return selected
 
 
 def _apply_diversity_filter(

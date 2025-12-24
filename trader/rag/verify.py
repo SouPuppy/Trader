@@ -13,9 +13,13 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from trader.rag.types import VerifiedAnswer, EvidencePack
+from trader.rag.normalize_citations import normalize_citations, extract_citations
 from trader.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Standard citation format: [DOC:type:stock:date]
+CITATION_PATTERN = re.compile(r'\[DOC:([^:]+):([^:]+):([^\]]+)\]')
 
 
 def verify_answer(raw_answer: str, evidence: EvidencePack) -> VerifiedAnswer:
@@ -30,59 +34,44 @@ def verify_answer(raw_answer: str, evidence: EvidencePack) -> VerifiedAnswer:
         VerifiedAnswer
     """
     violations = []
+    
+    # Step 1: Normalize citations (convert old formats, reject invalid ones)
+    normalized_answer, citation_violations = normalize_citations(raw_answer)
+    violations.extend(citation_violations)
+    
+    # Step 2: Extract ONLY [DOC:type:stock:date] format citations
+    # NO MORE guessing from natural language
+    citation_strings = extract_citations(normalized_answer)
+    
+    # Step 3: Convert citations to doc_ids for validation
+    # Build mapping from citation format to doc_id
+    citation_to_doc_id = {}
+    for item in evidence.items:
+        # Extract date from timestamp (YYYY-MM-DD format)
+        timestamp_date = item.timestamp[:10] if len(item.timestamp) >= 10 else item.timestamp
+        citation_format = f"[DOC:{item.doc_type}:{item.stock_code}:{timestamp_date}]"
+        citation_to_doc_id[citation_format] = item.doc_id
+    
+    # Convert citations to doc_ids
     used_doc_ids = []
+    invalid_citations = []
+    for citation in citation_strings:
+        if citation in citation_to_doc_id:
+            used_doc_ids.append(citation_to_doc_id[citation])
+        else:
+            invalid_citations.append(citation)
     
-    # Extract referenced doc_ids
-    # Pattern: doc_id: <id> or doc_id <id>
-    # Doc IDs can contain colons, spaces, and other characters (e.g., "news:4000:2023-12-29 00:00:00")
-    # Try multiple patterns to catch different formats
-    used_doc_ids = []
-    
-    # Pattern 1: doc_id: <id> (match until end of line, closing paren, or punctuation)
-    pattern1 = r'doc_id[:\s]+([^\n\)\],;.]+?)(?:\s*[.,;\)\]]|\s*$|\n)'
-    matches1 = re.findall(pattern1, raw_answer, re.IGNORECASE)
-    used_doc_ids.extend([m.strip() for m in matches1 if m.strip()])
-    
-    # Pattern 2: (doc_id: <id>) - match inside parentheses
-    pattern2 = r'\(doc_id[:\s]+([^\)]+)\)'
-    matches2 = re.findall(pattern2, raw_answer, re.IGNORECASE)
-    used_doc_ids.extend([m.strip() for m in matches2 if m.strip()])
-    
-    # Deduplicate
-    used_doc_ids = list(set(used_doc_ids))
+    if invalid_citations:
+        violations.append(f"Referenced non-existent citations: {invalid_citations}")
     
     # Validate referenced doc_ids exist in evidence pack
     valid_doc_ids = {item.doc_id for item in evidence.items}
     
-    # Try fuzzy matching: if exact match fails, try matching without time part
+    # Check if all used doc_ids are valid (no fuzzy matching - strict validation)
     invalid_refs = []
-    matched_doc_ids = set()
-    
     for doc_id in used_doc_ids:
-        if doc_id in valid_doc_ids:
-            matched_doc_ids.add(doc_id)
-        else:
-            # Try fuzzy match: remove time part (everything after last space or colon)
-            # e.g., "news:4000:2023-12-29 00:00:00" -> try "news:4000:2023-12-29"
-            fuzzy_match = None
-            # Try removing time part (after last space)
-            if ' ' in doc_id:
-                base_id = doc_id.rsplit(' ', 1)[0]
-                if base_id in valid_doc_ids:
-                    fuzzy_match = base_id
-            # Try removing everything after last colon (if it looks like a time)
-            if not fuzzy_match and doc_id.count(':') >= 2:
-                parts = doc_id.rsplit(':', 1)
-                if len(parts) == 2 and parts[1].replace(' ', '').replace('-', '').isdigit():
-                    base_id = parts[0]
-                    if base_id in valid_doc_ids:
-                        fuzzy_match = base_id
-            
-            if fuzzy_match:
-                matched_doc_ids.add(fuzzy_match)
-                logger.debug(f"Fuzzy matched doc_id: '{doc_id}' -> '{fuzzy_match}'")
-            else:
-                invalid_refs.append(doc_id)
+        if doc_id not in valid_doc_ids:
+            invalid_refs.append(doc_id)
     
     if invalid_refs:
         violations.append(f"Referenced non-existent doc_id: {invalid_refs}")
@@ -96,10 +85,16 @@ def verify_answer(raw_answer: str, evidence: EvidencePack) -> VerifiedAnswer:
             item = next((item for item in evidence.items if item.doc_id == doc_id), None)
             if item:
                 try:
-                    item_time = datetime.fromisoformat(item.timestamp.replace('Z', '+00:00'))
-                    if item_time > decision_time:
-                        violations.append(f"Document {doc_id} time ({item.timestamp}) is after decision time ({evidence.decision_time})")
-                except (ValueError, AttributeError):
+                    # Extract date part for comparison
+                    item_timestamp = item.timestamp[:10] if len(item.timestamp) >= 10 else item.timestamp
+                    item_time = datetime.fromisoformat(item_timestamp)
+                    decision_date = decision_time.date()
+                    item_date = item_time.date()
+                    
+                    if item_date > decision_date:
+                        violations.append(f"Document citation time ({item_timestamp}) is after decision time ({evidence.decision_time[:10]})")
+                except (ValueError, AttributeError) as e:
+                    logger.debug(f"Time validation error for {doc_id}: {e}")
                     pass
     except (ValueError, AttributeError):
         logger.warning("Cannot parse decision time, skipping time validation")
@@ -142,12 +137,13 @@ def verify_answer(raw_answer: str, evidence: EvidencePack) -> VerifiedAnswer:
     else:
         mode = "degraded"
     
+    # Use normalized answer (with normalized citations)
     # Add warning prefix if there are violations
     if violations:
         warning_prefix = "[Warning]: The following issues may make the answer unreliable:\n" + "\n".join(f"- {v}" for v in violations) + "\n\n"
-        answer = warning_prefix + raw_answer
+        answer = warning_prefix + normalized_answer
     else:
-        answer = raw_answer
+        answer = normalized_answer
     
     verified = VerifiedAnswer(
         answer=answer,

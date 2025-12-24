@@ -70,10 +70,40 @@ class TradeRetriever:
             params.append(limit)
             
             logger.debug(f"Executing trade history retrieval query: {query[:200]}...")
+            logger.debug(f"Query parameters: stock_code={plan.stock_code}, time_range=[{plan.time_start}, {plan.time_end}]")
+            
             cursor.execute(query, params)
             rows = cursor.fetchall()
             
             logger.info(f"Trade history retrieval returned {len(rows)} records")
+            
+            # If no records found, check if there's any data for this stock_code or time range
+            if len(rows) == 0:
+                # Check if stock_code exists at all
+                if plan.stock_code:
+                    cursor.execute("SELECT COUNT(*) FROM trade_history WHERE stock_code = ?", (plan.stock_code,))
+                    stock_count = cursor.fetchone()[0]
+                    if stock_count == 0:
+                        # Check what stock_codes exist
+                        cursor.execute("SELECT DISTINCT stock_code FROM trade_history LIMIT 5")
+                        existing_stocks = [r[0] for r in cursor.fetchall()]
+                        logger.warning(f"No trade history found for stock_code={plan.stock_code}. "
+                                     f"Available stock_codes in trade_history: {existing_stocks}")
+                    else:
+                        logger.warning(f"Found {stock_count} records for stock_code={plan.stock_code}, "
+                                     f"but none in time range [{plan.time_start}, {plan.time_end}]")
+                        # Check time range
+                        cursor.execute("SELECT MIN(trade_time), MAX(trade_time) FROM trade_history WHERE stock_code = ?", 
+                                     (plan.stock_code,))
+                        time_range = cursor.fetchone()
+                        if time_range[0]:
+                            logger.info(f"Available time range for {plan.stock_code}: {time_range[0]} to {time_range[1]}")
+                else:
+                    # Check total count
+                    cursor.execute("SELECT COUNT(*) FROM trade_history")
+                    total_count = cursor.fetchone()[0]
+                    logger.warning(f"No trade history found in time range [{plan.time_start}, {plan.time_end}]. "
+                                 f"Total records in trade_history: {total_count}")
             
             # Convert to Document and Candidate
             for row in rows:

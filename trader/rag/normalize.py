@@ -61,7 +61,7 @@ def normalize_request(
         raise ValueError(
             "decision_time is required and must be provided explicitly. "
             "This ensures queries are simulated at specific historical time points. "
-            "Example: decision_time='2024-01-15T00:00:00'"
+            "Example: decision_time='2023-12-15T00:00:00'"
         )
     
     # Ensure decision_time is ISO8601 format
@@ -74,7 +74,7 @@ def normalize_request(
         raise ValueError(
             f"Cannot parse decision_time '{decision_time}'. "
             "Please provide a valid ISO8601 format datetime string. "
-            "Example: '2024-01-15T00:00:00' or '2024-01-15T00:00:00Z'"
+            "Example: '2023-12-15T00:00:00' or '2023-12-15T00:00:00Z'"
         ) from e
     
     return RagRequest(

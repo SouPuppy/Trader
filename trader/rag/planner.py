@@ -3,7 +3,8 @@ Retrieval Planner
 Generate retrieval plan JSON, decide which doc_types, time windows, k values, constraints and query forms
 """
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
+import re
 import sys
 from pathlib import Path
 
@@ -38,8 +39,8 @@ def build_plan(request: RagRequest) -> RetrievalPlan:
     # Infer task type from question type
     task_type = _infer_task_type(request.question)
     
-    # Set time window based on task type
-    time_window_days = _get_time_window(task_type)
+    # Set time window based on task type and question text
+    time_window_days = _get_time_window(task_type, request.question)
     time_end = decision_time.isoformat()
     time_start = (decision_time - timedelta(days=time_window_days)).isoformat()
     
@@ -73,38 +74,118 @@ def build_plan(request: RagRequest) -> RetrievalPlan:
 
 
 def _infer_task_type(question: str) -> TaskType:
-    """Infer task type from question"""
+    """
+    Infer task type from question with strict classification rules
+    
+    Priority order (most specific first):
+    1. news_impact: Contains news/event/catalyst keywords
+    2. trade_explain: Contains trading history keywords
+    3. market_state: Contains trend/market state keywords
+    4. risk_check: Contains risk keywords
+    5. strategy_suggest: Contains strategy/suggestion keywords
+    """
     question_lower = question.lower()
     
-    # Trend-related keywords (check first as they are more specific)
+    # 1. NEWS_IMPACT: Highest priority - check for news/event/catalyst keywords first
+    # These should NOT fall through to market_state
+    news_impact_keywords = [
+        'news', 'important news', 'impact', 'headline', 'event', 'catalyst',
+        'announcement', 'press release', 'news event', 'news impact',
+        'what news', 'recent news', 'news about', 'news regarding'
+    ]
+    if any(kw in question_lower for kw in news_impact_keywords):
+        return "news_impact"
+    
+    # 2. TRADE_EXPLAIN: Trading history queries - MUST depend on trade_history
+    trade_explain_keywords = [
+        'trading history', 'trade history', 'why buy', 'why sell',
+        'my trades', 'my trading', 'trading actions', 'trading decisions',
+        'buy sell', 'buying selling', 'trading record', 'transaction history',
+        'what trades', 'recent trades', 'trading activity'
+    ]
+    if any(kw in question_lower for kw in trade_explain_keywords):
+        return "trade_explain"
+    
+    # 3. MARKET_STATE: Trend and market state queries
     trend_keywords = [
         'trend', 'trending', 'trends',
         'up', 'down', 'upward', 'downward', 'upward trend', 'downward trend',
         'rising', 'falling', 'going up', 'going down', 'has been rising', 
         'has been falling', 'is rising', 'is falling', 'price movement',
-        'price trend', 'market trend', 'stock trend'
+        'price trend', 'market trend', 'stock trend', 'market state',
+        'price', 'performance', 'how is', 'market performance'
     ]
     if any(kw in question_lower for kw in trend_keywords):
         return "market_state"
     
-    # Market state keywords
-    if any(kw in question_lower for kw in ['market state', 'price', 'performance', 'how is']):
-        return "market_state"
-    elif any(kw in question_lower for kw in ['trade', 'buy', 'sell', 'history', 'transaction']):
-        return "trade_explain"
-    elif any(kw in question_lower for kw in ['risk', 'warning', 'danger', 'concern']):
+    # 4. RISK_CHECK: Risk-related queries
+    if any(kw in question_lower for kw in ['risk', 'warning', 'danger', 'concern', 'risky']):
         return "risk_check"
-    elif any(kw in question_lower for kw in ['news', 'event', 'announcement']):
-        return "news_impact"
-    elif any(kw in question_lower for kw in ['strategy', 'suggest', 'recommend', 'advice']):
+    
+    # 5. STRATEGY_SUGGEST: Strategy and recommendation queries
+    if any(kw in question_lower for kw in ['strategy', 'suggest', 'recommend', 'advice', 'should i']):
         return "strategy_suggest"
-    else:
-        # Default to market_state (most common for general queries)
-        return "market_state"
+    
+    # Default to market_state (most common for general queries)
+    return "market_state"
 
 
-def _get_time_window(task_type: TaskType) -> int:
-    """Get time window based on task type (in days)"""
+def infer_days_from_question(question: str) -> Optional[int]:
+    """
+    Infer number of days from question text
+    
+    Args:
+        question: User question
+        
+    Returns:
+        Number of days if found, None otherwise
+    """
+    q = question.lower()
+    
+    # Pattern: "last N days" or "past N days"
+    m = re.search(r'(?:last|past)\s+(\d+)\s+days?', q)
+    if m:
+        return int(m.group(1))
+    
+    # Pattern: "N days" (when context suggests time window)
+    m = re.search(r'(\d+)\s+days?', q)
+    if m:
+        days = int(m.group(1))
+        # Only accept if it's a reasonable time window (1-365 days)
+        if 1 <= days <= 365:
+            return days
+    
+    # Common phrases
+    if "past month" in q or "last month" in q:
+        return 30
+    if "past week" in q or "last week" in q:
+        return 7
+    if "past year" in q or "last year" in q:
+        return 365
+    if "past quarter" in q or "last quarter" in q:
+        return 90
+    
+    return None
+
+
+def _get_time_window(task_type: TaskType, question: str = "") -> int:
+    """
+    Get time window based on task type and question text (in days)
+    
+    Args:
+        task_type: Task type
+        question: User question (optional, for inferring days)
+        
+    Returns:
+        Number of days for time window
+    """
+    # Try to infer from question first
+    inferred_days = infer_days_from_question(question)
+    if inferred_days is not None:
+        logger.info(f"Inferred {inferred_days} days from question: '{question[:50]}...'")
+        return inferred_days
+    
+    # Default windows based on task type
     windows = {
         "market_state": 60,      # 60 days market state (increased for trend analysis)
         "trade_explain": 90,     # 90 days trade history
@@ -112,7 +193,9 @@ def _get_time_window(task_type: TaskType) -> int:
         "news_impact": 14,       # 14 days news impact
         "strategy_suggest": 30,  # 30 days strategy suggestion
     }
-    return windows.get(task_type, 60)
+    default_days = windows.get(task_type, 60)
+    logger.debug(f"Using default time window for {task_type}: {default_days} days")
+    return default_days
 
 
 def _build_retrieval_needs(task_type: TaskType, request: RagRequest) -> Dict[DocType, RetrievalNeed]:

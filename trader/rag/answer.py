@@ -16,8 +16,10 @@ from .retrievers import NewsRetriever, TradeRetriever, TrendsRetriever
 from .merger import merge_candidates
 from .rerank import rerank
 from .evidence import build_evidence
+from .evidence_gate import apply_evidence_gate, check_data_coverage
 from .prompt import build_prompt
 from .generate import llm_generate
+from .normalize_citations import normalize_citations, sanitize_citations
 from .verify import verify_answer
 from .observability import log_all
 from .db.queries import ensure_tables
@@ -55,6 +57,12 @@ def rag_answer(
     # 2. Build retrieval plan
     plan = build_plan(req)
     
+    # 2.5. Check data coverage (preflight check)
+    coverage_msg = check_data_coverage(plan)
+    if coverage_msg:
+        logger.warning(f"Data coverage check failed: {coverage_msg}")
+        # Continue with retrieval, but will degrade later
+    
     # 3. Retrieve candidates by type
     news_retriever = NewsRetriever()
     trade_retriever = TradeRetriever()
@@ -77,14 +85,40 @@ def rag_answer(
     # 6. Build evidence pack
     evidence = build_evidence(plan, ranked)
     
-    # 7. Build prompt
-    prompt = build_prompt(req, evidence)
+    # 6.5. Apply evidence gate (check if required evidence exists)
+    evidence, degradation_msg = apply_evidence_gate(evidence)
+    
+    # 6.6. Combine coverage and evidence degradation messages
+    if coverage_msg:
+        if degradation_msg:
+            degradation_msg = f"{coverage_msg}\n{degradation_msg}"
+        else:
+            degradation_msg = coverage_msg
+    
+    # 7. Build prompt (include degradation message if any)
+    prompt = build_prompt(req, evidence, degradation_msg=degradation_msg)
     
     # 8. LLM generation
     raw = llm_generate(prompt)
     
-    # 9. Verify answer
-    verified = verify_answer(raw, evidence)
+    # 8.5. Normalize citations before verification
+    normalized_raw, citation_violations = normalize_citations(raw)
+    if citation_violations:
+        logger.warning(f"Citation normalization violations: {citation_violations}")
+    
+    # 8.6. Sanitize citations (remove citations not in evidence pack)
+    allowed_doc_ids = {item.doc_id for item in evidence.items}
+    sanitized_raw = sanitize_citations(normalized_raw, allowed_doc_ids, evidence.items)
+    
+    # If evidence is empty, force degraded mode
+    if len(evidence.items) == 0:
+        logger.warning("Evidence pack is empty, forcing degraded mode")
+        # Don't generate answer with citations if no evidence
+        if not degradation_msg:
+            degradation_msg = "Insufficient evidence available. Cannot provide answer with citations."
+    
+    # 9. Verify answer (with sanitized citations)
+    verified = verify_answer(sanitized_raw, evidence)
     
     # 10. Log all information
     log_all(req, plan, ranked, evidence, verified)
