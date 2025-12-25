@@ -64,9 +64,9 @@ def hierarchical_multiasset_strategy(
     
     if initial_theta is None:
         initial_theta = Theta(
-            gross_exposure=0.7,  # 进一步降低总仓位，更保守
-            max_w=0.15,  # 降低单票上限，分散风险
-            turnover_cap=0.20,  # 进一步降低换手率，减少交易成本
+            gross_exposure=0.85,  # 提高总仓位到85%，充分利用资金
+            max_w=0.30,  # 提高单票上限到20%，允许集中配置优质股票
+            turnover_cap=0.25,  # 适度提高换手率上限，允许灵活调整
             risk_mode="neutral",
             enter_th=0.02,  # 降低进场阈值，让更多股票有机会
             exit_th=-0.10  # 放宽出场阈值，避免过早止损
@@ -95,7 +95,8 @@ def hierarchical_multiasset_strategy(
         initial_theta=initial_theta,
         report_title=None,  # 不自动生成报告
         report_output_dir=output_dir,
-        train_test_split_ratio=train_test_split_ratio
+        train_test_split_ratio=train_test_split_ratio,
+        only_test_period=False  # 从第一天开始交易，不限制训练期
     )
     
     # 获取可用日期
@@ -231,9 +232,9 @@ if __name__ == "__main__":
         stock_codes=["AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O"],
         initial_cash=1000000.0,
         initial_theta=Theta(
-            gross_exposure=0.7,  # 进一步降低总仓位，更保守
-            max_w=0.15,  # 降低单票上限，分散风险
-            turnover_cap=0.20,  # 进一步降低换手率，减少交易成本
+            gross_exposure=0.85,  # 提高总仓位到85%，充分利用资金
+            max_w=0.20,  # 提高单票上限到20%，允许集中配置优质股票
+            turnover_cap=0.25,  # 适度提高换手率上限，允许灵活调整
             risk_mode="neutral",
             enter_th=0.02,  # 降低进场阈值，让更多股票有机会
             exit_th=-0.10  # 放宽出场阈值，避免过早止损

@@ -178,7 +178,7 @@ class BacktestReport:
         
         # 单股票或多股票分别测试，使用原有模板
         # 先生成走势图（需要在 Markdown 中引用）
-        chart_file = self._generate_charts(stock_code, start_date, end_date)
+        chart_file = self._generate_charts(stock_code, start_date, end_date, account=account)
         
         # 生成 Markdown 报告（包含图表引用）
         markdown_report = self._generate_markdown_report(
@@ -403,7 +403,7 @@ class BacktestReport:
                 template_data['execution_metrics'] = execution_metrics
         
         # 生成走势图
-        chart_file = self._generate_charts(stock_codes[0] if stock_codes else "portfolio", start_date, end_date, all_stock_codes=stock_codes)
+        chart_file = self._generate_charts(stock_codes[0] if stock_codes else "portfolio", start_date, end_date, all_stock_codes=stock_codes, account=account)
         template_data['chart_file'] = chart_file.name if chart_file else None
         
         # 渲染模板
@@ -1207,7 +1207,7 @@ class BacktestReport:
             'beta': beta
         }
     
-    def _generate_charts(self, stock_code: str, start_date: str, end_date: str, all_stock_codes: Optional[List[str]] = None) -> Optional[Path]:
+    def _generate_charts(self, stock_code: str, start_date: str, end_date: str, all_stock_codes: Optional[List[str]] = None, account=None) -> Optional[Path]:
         """生成走势图（支持多股票）"""
         if not self.daily_records:
             logger.warning("没有每日记录，无法生成走势图")
@@ -1227,23 +1227,50 @@ class BacktestReport:
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values('date')
         
-        # 分离训练期和测试期的数据（如果存在 is_test_period 字段）
-        if 'is_test_period' in df.columns:
+        # 分离训练期和测试期（用于标注，不用于截断图表）
+        has_train_test_split = False
+        split_date_ts: Optional[pd.Timestamp] = None
+        if 'is_test_period' in df.columns and self.train_test_split_date:
             train_df = df[~df['is_test_period']].copy()
             test_df = df[df['is_test_period']].copy()
+            has_train_test_split = (not train_df.empty) and (not test_df.empty)
+            if has_train_test_split:
+                split_date_ts = pd.to_datetime(self.train_test_split_date).normalize()
         else:
             train_df = pd.DataFrame()
             test_df = pd.DataFrame()
         
-        # 只使用测试期数据绘制图表（如果有测试期数据）
-        if not test_df.empty and self.train_test_split_date:
-            display_df = test_df.copy()
-            # 获取测试期开始时的权益作为初始资金
-            test_start_equity = test_df.iloc[0]['equity']
-        else:
-            # 如果没有测试期数据，使用全部数据
-            display_df = df.copy()
-            test_start_equity = self.daily_records[0]['equity']
+        # 记录首笔交易日期（用于标注/对齐展示起点）
+        first_trade_date_ts: Optional[pd.Timestamp] = None
+        if account and getattr(account, "trades", None):
+            trade_dates: List[pd.Timestamp] = []
+            for trade in account.trades:
+                trade_date = trade.get('date')
+                if not trade_date:
+                    continue
+                if isinstance(trade_date, str):
+                    trade_dates.append(pd.to_datetime(trade_date).normalize())
+                elif isinstance(trade_date, datetime):
+                    trade_dates.append(pd.to_datetime(trade_date).normalize())
+                elif isinstance(trade_date, pd.Timestamp):
+                    trade_dates.append(trade_date.normalize())
+            if trade_dates:
+                first_trade_date_ts = min(trade_dates)
+                logger.info(f"第一笔交易日期: {first_trade_date_ts.strftime('%Y-%m-%d')}")
+        
+        # 图表展示区间：默认从“首笔交易日”开始（更符合直觉：从真正开始交易那天起画）
+        # 若没有交易，则展示完整回测区间
+        display_df = df.copy()
+        if first_trade_date_ts is not None:
+            filtered = df[df["date"] >= first_trade_date_ts].copy()
+            if not filtered.empty:
+                display_df = filtered
+        
+        starting_equity = (
+            display_df.iloc[0]["equity"]
+            if not display_df.empty
+            else self.daily_records[0]["equity"]
+        )
         
         # 检测是否有多个股票（如果未提供，则从记录中检测）
         if all_stock_codes is None:
@@ -1262,32 +1289,33 @@ class BacktestReport:
         returns = display_df['return_pct'].tolist()
         max_drawdown = self._calculate_max_drawdown(equities)
         
-        # 计算夏普比率（基于显示的数据）
-        # 如果只显示测试期，需要重新计算基于测试期的日收益率
-        if not test_df.empty and self.train_test_split_date:
-            # 只使用测试期数据计算日收益率
-            test_equities = test_df['equity'].tolist()
-            test_daily_returns = []
-            for i in range(1, len(test_equities)):
-                if test_equities[i-1] > 0:
-                    ret = (test_equities[i] / test_equities[i-1]) - 1.0
-                    test_daily_returns.append(ret)
+        # 计算夏普比率（基于展示数据）
+        # 使用 display_df（默认从第一笔交易开始）来计算日收益率
+        if len(display_df) > 1:
+            # 使用过滤后的 display_df 计算日收益率
+            display_equities = display_df['equity'].tolist()
+            display_daily_returns = []
+            for i in range(1, len(display_equities)):
+                if display_equities[i-1] > 0:
+                    ret = (display_equities[i] / display_equities[i-1]) - 1.0
+                    display_daily_returns.append(ret)
             
-            # 计算测试期的夏普比率
-            if test_daily_returns:
-                mean_return = sum(test_daily_returns) / len(test_daily_returns)
-                variance = sum((r - mean_return) ** 2 for r in test_daily_returns) / (len(test_daily_returns) - 1) if len(test_daily_returns) > 1 else 0.0
+            # 计算夏普比率
+            if display_daily_returns:
+                mean_return = sum(display_daily_returns) / len(display_daily_returns)
+                variance = sum((r - mean_return) ** 2 for r in display_daily_returns) / (len(display_daily_returns) - 1) if len(display_daily_returns) > 1 else 0.0
                 std_return = math.sqrt(variance) if variance > 0 else 0.0
                 sharpe_daily = (mean_return / std_return) if std_return > 0 else 0.0
                 sharpe_info = {
-                    'daily_returns': test_daily_returns,
+                    'daily_returns': display_daily_returns,
                     'sharpe_daily': sharpe_daily,
                     'risk_free_rate_daily': 0.0
                 }
             else:
                 sharpe_info = None
-            daily_returns = test_daily_returns
+            daily_returns = display_daily_returns
         else:
+            # 如果数据不足，使用原有方法计算
             daily_returns, sharpe_info = self._calculate_daily_returns(risk_free_rate_annual=0.0)
         
         # 计算回撤序列（基于显示的数据）
@@ -1341,21 +1369,21 @@ class BacktestReport:
         
         # 创建图表 - 5个子图：权益、回撤、现金/持仓、收益率、滚动夏普
         fig, axes = plt.subplots(5, 1, figsize=(12, 14))
-        # 使用 title 和股票代码作为图表标题（只显示测试期日期范围）
-        if not test_df.empty and self.train_test_split_date:
-            test_start = test_df.iloc[0]['date'].strftime('%Y-%m-%d')
-            test_end = test_df.iloc[-1]['date'].strftime('%Y-%m-%d')
-            fig.suptitle(f'{self.title} - {stock_code} (Test Period: {test_start} to {test_end})', fontsize=14)
-        else:
-            fig.suptitle(f'{self.title} - {stock_code} ({start_date} to {end_date})', fontsize=14)
+        # 图表标题：回测区间 +（可选）train/test split +（可选）展示起点（首笔交易日）
+        title_lines = [f"{self.title} - {stock_code} ({start_date} to {end_date})"]
+        if has_train_test_split and split_date_ts is not None:
+            title_lines.append(f'Train/Test split: {split_date_ts.strftime("%Y-%m-%d")}')
+        if first_trade_date_ts is not None:
+            title_lines.append(f'Displayed from first trade: {first_trade_date_ts.strftime("%Y-%m-%d")}')
+        fig.suptitle("\n".join(title_lines), fontsize=14)
         
-        # 1. 账户权益曲线（只显示测试期数据）
+        # 1. 账户权益曲线（展示数据）
         ax1 = axes[0]
         ax1.plot(display_df['date'], display_df['equity'], label='Total Equity', 
                 linewidth=2, color='blue')
         
-        ax1.axhline(y=test_start_equity, color='gray', linestyle='--', 
-                   label=f'Starting Equity ({test_start_equity:,.0f})', alpha=0.7)
+        ax1.axhline(y=starting_equity, color='gray', linestyle='--', 
+                   label=f'Starting Equity ({starting_equity:,.0f})', alpha=0.7)
         ax1.set_ylabel('Equity (CNY)', fontsize=10)
         ax1.set_title('Total Equity Trend', fontsize=12)
         ax1.legend(loc='best')
@@ -1364,7 +1392,7 @@ class BacktestReport:
         ax1.xaxis.set_major_locator(mdates.MonthLocator())
         plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
         
-        # 2. 回撤曲线（只显示测试期数据）
+        # 2. 回撤曲线（展示数据）
         ax2 = axes[1]
         ax2.fill_between(display_df['date'], display_df['drawdown'], 0, alpha=0.3, color='red', label='Drawdown')
         ax2.plot(display_df['date'], display_df['drawdown'], linewidth=1.5, color='darkred')
@@ -1377,7 +1405,7 @@ class BacktestReport:
         ax2.xaxis.set_major_locator(mdates.MonthLocator())
         plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
         
-        # 3. 现金和持仓市值（只显示测试期数据）
+        # 3. 现金和持仓市值（展示数据）
         ax3 = axes[2]
         ax3.plot(display_df['date'], display_df['cash'], label='Cash', linewidth=1.5, color='green')
         ax3.plot(display_df['date'], display_df['positions_value'], label='Total Positions Value', 
@@ -1418,7 +1446,7 @@ class BacktestReport:
         ax3.xaxis.set_major_locator(mdates.MonthLocator())
         plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
         
-        # 4. 收益率曲线（只显示测试期数据）
+        # 4. 收益率曲线（展示数据）
         ax4 = axes[3]
         ax4.plot(display_df['date'], display_df['return_pct'], label='Return Rate', 
                 linewidth=2, color='red')
@@ -1456,6 +1484,18 @@ class BacktestReport:
             ax5.set_title('Rolling Sharpe Ratio (30-day window)', fontsize=12)
             ax5.grid(True, alpha=0.3)
         
+        # 关键日期标注：train/test split 与首笔交易日（仅标注，不截断）
+        try:
+            if has_train_test_split and split_date_ts is not None:
+                for ax in axes:
+                    ax.axvline(split_date_ts, color='black', linestyle='--', alpha=0.5, linewidth=1)
+            if first_trade_date_ts is not None:
+                for ax in axes:
+                    ax.axvline(first_trade_date_ts, color='teal', linestyle=':', alpha=0.5, linewidth=1)
+        except Exception:
+            # 标注失败不影响图表主体
+            pass
+        
         plt.tight_layout()
         
         # 保存图表（使用 title 在文件名中）
@@ -1467,7 +1507,7 @@ class BacktestReport:
         # 如果是多资产回测，生成额外的多股票图表
         if is_multi_asset and all_stock_codes:
             multi_asset_chart_file = self._generate_multi_asset_charts(
-                display_df, all_stock_codes, start_date, end_date, self.title or "backtest"
+                display_df, all_stock_codes, start_date, end_date, self.title or "backtest", account=account
             )
             if multi_asset_chart_file:
                 logger.info(f"多资产图表已保存: {multi_asset_chart_file}")
@@ -1476,16 +1516,17 @@ class BacktestReport:
         return chart_file
     
     def _generate_multi_asset_charts(self, display_df: pd.DataFrame, stock_codes: set, 
-                                     start_date: str, end_date: str, title: str) -> Optional[Path]:
+                                     start_date: str, end_date: str, title: str, account=None) -> Optional[Path]:
         """
         生成多资产回测的额外图表
         
         Args:
-            display_df: 显示数据 DataFrame
+            display_df: 显示数据 DataFrame（已经过滤到从第一笔交易开始）
             stock_codes: 股票代码集合
             start_date: 开始日期
             end_date: 结束日期
             title: 标题字符串
+            account: 账户实例（可选，用于确定第一笔交易日期）
             
         Returns:
             Optional[Path]: 图表文件路径
@@ -1499,6 +1540,7 @@ class BacktestReport:
             
             logger.info(f"生成多资产图表，包含 {num_stocks} 支股票")
             
+            # display_df 在 _generate_charts 中已确定展示区间（默认完整回测区间），这里直接使用
             # 准备数据：提取每支股票的权重、市值、收益等
             dates = display_df['date'].tolist()
             
@@ -1786,7 +1828,7 @@ class BacktestReport:
             
             # 生成图表（会保存到 assets_dir）
             chart_file = temp_report._generate_charts(
-                stock_code, actual_start_date, actual_end_date
+                stock_code, actual_start_date, actual_end_date, account=account
             )
             
             # 如果生成了图表，重命名为标准格式

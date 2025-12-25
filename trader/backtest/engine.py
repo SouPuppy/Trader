@@ -146,8 +146,8 @@ class BacktestEngine:
             shares: 买入股数（可选）
             amount: 买入金额（可选，与 shares 二选一）
         """
-        # 检查是否在训练期（训练期不允许交易）
-        if self.train_test_split_date and self.current_date:
+        # 检查是否在训练期（只有当 only_test_period=True 时，训练期才不允许交易）
+        if self.only_test_period and self.train_test_split_date and self.current_date:
             if self.current_date < self.train_test_split_date:
                 logger.debug(f"训练期禁止交易，跳过买入订单: {stock_code}")
                 return
@@ -163,8 +163,8 @@ class BacktestEngine:
             stock_code: 股票代码
             shares: 卖出股数
         """
-        # 检查是否在训练期（训练期不允许交易）
-        if self.train_test_split_date and self.current_date:
+        # 检查是否在训练期（只有当 only_test_period=True 时，训练期才不允许交易）
+        if self.only_test_period and self.train_test_split_date and self.current_date:
             if self.current_date < self.train_test_split_date:
                 logger.debug(f"训练期禁止交易，跳过卖出订单: {stock_code}")
                 return
@@ -210,8 +210,8 @@ class BacktestEngine:
     
     def _execute_actions(self):
         """执行队列中的所有行为"""
-        # 检查是否在训练期（如果设置了分割日期，训练期不允许交易）
-        if self.train_test_split_date and self.current_date:
+        # 检查是否在训练期（如果设置了 only_test_period=True 且设置了分割日期，训练期不允许交易）
+        if self.only_test_period and self.train_test_split_date and self.current_date:
             if self.current_date < self.train_test_split_date:
                 # 训练期，清空队列，不允许交易
                 while self.action_queue:
@@ -373,8 +373,14 @@ class BacktestEngine:
                 # 执行队列中的行为
                 self._execute_actions()
             
-            # 只在测试期记录每日账户状态（用于生成报告）
-            if self.enable_report and self.report and is_test_period:
+            # 决定是否记录每日账户状态（用于生成报告）：
+            # - 如果 only_test_period=True：只在测试期记录
+            # - 如果 only_test_period=False：记录所有日期（训练期和测试期）
+            should_record_state = True
+            if self.only_test_period:
+                should_record_state = is_test_period
+            
+            if self.enable_report and self.report and should_record_state:
                 # 获取当前所有持仓的市场价格
                 market_prices = {}
                 for stock_code in self.account.positions.keys():
