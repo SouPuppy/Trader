@@ -111,8 +111,15 @@ def build_reflection_question(
 【分析要求】
 请基于 RAG 系统检索到的历史数据、新闻、趋势等多维度信息，分析：
 1. 本周表现评估：本周收益率 {weekly_return*100:.2f}% 是否良好？与市场整体表现相比如何？
+   **重要**：即使检索到的数据只覆盖部分股票，也要基于周收益率评估整体策略表现
+   **重要**：周收益率是评估策略表现的核心指标，必须优先考虑
 2. 市场环境分析：当前市场环境如何？组合中的股票（{', '.join(stock_codes)}）有哪些共同的风险或机会？
+   **重要**：虽然检索数据可能只针对单只股票，但要分析整个多资产组合的共同特征
+   **重要**：如果检索数据不足，可以基于周收益率推断市场环境（正收益可能表示市场向好，负收益可能表示市场承压）
 3. 参数调整建议：基于市场环境和策略表现，策略参数是否需要调整？如何调整才能提升收益或降低风险？
+   **重要**：即使证据不足，也要基于周收益率给出调整建议，而非完全拒绝调整
+   **重要**：如果周收益率 > 1.5%，建议适度提高仓位或降低进场阈值；如果周收益率 < -1.5%，建议适度降低仓位或提高进场阈值
+   **重要**：不要因为证据不足就拒绝调整，应该基于策略表现（周收益率）给出保守但合理的建议
 
 【输出格式】
 请以 JSON 格式返回参数调整建议，格式如下：
@@ -131,8 +138,9 @@ def build_reflection_question(
 
 【重要约束】
 - 参数调整必须保守且渐进，避免大幅波动
-- 只在有明显证据支持时才调整参数
-- 如果市场环境不明确或证据不足，保持参数不变（设置为 null）
+- **重要**：即使证据不足，也要基于周收益率（{weekly_return*100:.2f}%）给出参数调整建议
+- **重要**：如果证据不足，应该基于策略表现（周收益率）进行适度调整，而非完全拒绝调整
+- **重要**：分析整个多资产组合的表现，而非单只股票
 - 参数范围限制：
   * gross_exposure: [0.4, 0.85]
   * max_w: [0.08, 0.18]
@@ -140,6 +148,10 @@ def build_reflection_question(
   * enter_th: [0.01, 0.05]
   * exit_th: [-0.15, -0.08]
 - 如果某个参数不需要调整，必须设置为 null（不要使用当前值）
+- **调整原则**：
+  * 如果周收益率 > 1.5%，可以适度提高仓位（gross_exposure, max_w）或降低进场阈值（enter_th）
+  * 如果周收益率 < -1.5%，可以适度降低仓位或提高进场阈值
+  * 如果周收益率在 ±1.5% 范围内，可以保持参数不变或微调
 """
     return question
 
@@ -264,16 +276,19 @@ def rag_reflection(
     logger.info(f"[RAG Reflection] 周收益率: {weekly_return*100:.2f}%")
     logger.info(f"[RAG Reflection] 交易股票池: {', '.join(stock_codes)}")
     
-    # 调用 RAG 系统（使用第一只股票作为代表，因为 RAG 系统需要 stock_code）
-    # 注意：问题中已包含所有股票信息，RAG 系统会基于问题内容检索相关信息
+    # 改进：尝试为多只股票检索数据，而非只用第一只
+    # 优先选择有交易历史的股票
     primary_stock = stock_codes[0] if stock_codes else None
     
+    # 尝试选择有更多数据的股票（如果有交易历史更好）
+    # 这里简化处理，使用第一只股票，但在 prompt 中强调多资产分析
     if not primary_stock:
         logger.warning("[RAG Reflection] 没有股票代码，回退到 naive reflection")
         return naive_reflection_fallback(current_theta, weekly_return, reflection_id)
     
     try:
         logger.info(f"[RAG Reflection] 调用 RAG 系统，使用股票代码: {primary_stock}")
+        logger.info(f"[RAG Reflection] 注意：RAG 将基于 {primary_stock} 检索数据，但分析应涵盖整个组合: {', '.join(stock_codes)}")
         verified_answer = rag_answer(
             question=question,
             stock_code=primary_stock,
@@ -292,15 +307,71 @@ def rag_reflection(
         if verified_answer.violations:
             logger.warning(f"  - 验证违规: {verified_answer.violations}")
         
+        # 检查是否是 degraded mode 或证据不足
+        is_degraded = verified_answer.mode == "degraded"
+        has_insufficient_evidence = any(
+            phrase in verified_answer.answer.lower() 
+            for phrase in ["insufficient evidence", "cannot answer", "not enough evidence", "no parameter adjustments"]
+        )
+        
         # 解析 RAG 答案
         adjustments = parse_rag_adjustments(verified_answer.answer, current_theta)
         
-        if not adjustments:
-            logger.warning("[RAG Reflection] 无法解析 RAG 答案，回退到 naive reflection")
-            logger.debug(f"[RAG Reflection] RAG 原始答案: {verified_answer.answer[:500]}...")
-            return naive_reflection_fallback(current_theta, weekly_return, reflection_id)
+        # 检查 RAG 是否拒绝调整（所有参数都是 null 或保持原值）
+        rag_refused_adjustment = False
+        if adjustments:
+            rag_theta = adjustments["theta"]
+            # 检查是否所有参数都保持原值
+            if (rag_theta["gross_exposure"] == current_theta.gross_exposure and
+                rag_theta["max_w"] == current_theta.max_w and
+                rag_theta["turnover_cap"] == current_theta.turnover_cap and
+                rag_theta["risk_mode"] == current_theta.risk_mode and
+                rag_theta["enter_th"] == current_theta.enter_th and
+                rag_theta["exit_th"] == current_theta.exit_th):
+                rag_refused_adjustment = True
         
-        # 应用调整
+        # 如果 degraded mode、证据不足或拒绝调整，使用改进的混合策略
+        if is_degraded or has_insufficient_evidence or not adjustments or rag_refused_adjustment:
+            logger.warning(f"[RAG Reflection] RAG 系统状态: degraded={is_degraded}, insufficient_evidence={has_insufficient_evidence}, refused={rag_refused_adjustment}")
+            logger.info("[RAG Reflection] 使用改进的混合策略：优先使用 naive reflection，RAG 仅作为参考")
+            
+            # 优先使用 naive reflection（基于周收益率，更可靠）
+            naive_theta = naive_reflection_fallback(current_theta, weekly_return, reflection_id)
+            
+            # 如果 RAG 有部分建议，尝试融合（改进：采用更合理的值，而非总是更保守）
+            if adjustments and not rag_refused_adjustment:
+                rag_theta = adjustments["theta"]
+                
+                # 检查方向一致性
+                rag_gross_change = rag_theta["gross_exposure"] - current_theta.gross_exposure
+                naive_gross_change = naive_theta.gross_exposure - current_theta.gross_exposure
+                
+                # 改进：如果方向一致，采用两者的平均值（更平衡），而非总是更保守的值
+                if rag_gross_change * naive_gross_change > 0:  # 同方向
+                    # 采用平均值，但偏向 naive（因为 naive 基于周收益率，更可靠）
+                    weight_naive = 0.7  # naive 权重更高
+                    weight_rag = 0.3
+                    naive_theta.gross_exposure = (
+                        weight_naive * naive_theta.gross_exposure + 
+                        weight_rag * rag_theta["gross_exposure"]
+                    )
+                    naive_theta.max_w = (
+                        weight_naive * naive_theta.max_w + 
+                        weight_rag * rag_theta["max_w"]
+                    )
+                    # 改进：提高仓位下限，避免过度保守
+                    # 确保在合理范围内，但下限更高
+                    naive_theta.gross_exposure = max(0.60, min(0.85, naive_theta.gross_exposure))  # 提高下限
+                    naive_theta.max_w = max(0.12, min(0.18, naive_theta.max_w))  # 提高下限
+                    logger.info("[RAG Reflection] 融合 RAG 和 naive 建议（采用加权平均，偏向 naive，设置更高下限）")
+                else:
+                    # 方向不一致，采用 naive（因为 naive 基于周收益率，更可靠）
+                    logger.info("[RAG Reflection] RAG 和 naive 方向不一致，采用 naive 建议")
+            
+            logger.info(f"[RAG Reflection] 混合策略最终参数: {current_theta} -> {naive_theta}")
+            return naive_theta
+        
+        # RAG 正常模式且有有效调整
         new_theta = Theta(
             gross_exposure=adjustments["theta"]["gross_exposure"],
             max_w=adjustments["theta"]["max_w"],
@@ -325,7 +396,7 @@ def rag_reflection(
 
 def naive_reflection_fallback(current_theta: Theta, weekly_return: float, reflection_id: int) -> Theta:
     """
-    保守的反思回退方案（当 RAG 系统不可用时使用，使用与 4.2 相同的保守策略）
+    改进的反思回退方案：更积极的调整策略
     
     Args:
         current_theta: 当前参数θ
@@ -338,34 +409,58 @@ def naive_reflection_fallback(current_theta: Theta, weekly_return: float, reflec
     new_theta = current_theta.copy()
     new_theta.reflection_id = reflection_id
     
-    # 使用与 4.2 相同的保守策略：提高阈值，降低调整幅度
-    adjustment_factor = 0.02  # 2% 的调整幅度（更保守）
-    positive_threshold = 0.015  # 1.5%（大幅提高，减少调整频率）
-    negative_threshold = -0.015  # -1.5%
+    # 改进：降低阈值，更积极的调整策略
+    adjustment_factor = 0.02  # 2% 的调整幅度
+    positive_threshold = 0.01  # 1.0%（降低阈值，更积极）
+    negative_threshold = -0.01  # -1.0%
     
-    if weekly_return > positive_threshold:  # 周收益率 > 1.5%，表现明显好
+    if weekly_return > positive_threshold:  # 周收益率 > 1.0%，表现良好
         logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% > {positive_threshold*100:.2f}%，表现良好，适度激进调整")
-        new_theta.gross_exposure = min(0.85, current_theta.gross_exposure * (1 + adjustment_factor))
-        new_theta.max_w = min(0.20, current_theta.max_w * (1 + adjustment_factor))
+        # 改进：更积极地提高仓位，充分利用盈利机会
+        # 使用更大的调整幅度，确保仓位能充分利用盈利
+        aggressive_factor = adjustment_factor * 1.5  # 1.5倍调整幅度
+        new_theta.gross_exposure = min(0.85, current_theta.gross_exposure * (1 + aggressive_factor))
+        new_theta.max_w = min(0.20, current_theta.max_w * (1 + aggressive_factor))
         new_theta.turnover_cap = min(0.30, current_theta.turnover_cap * (1 + adjustment_factor * 0.6))
         if current_theta.risk_mode == "risk_off":
             new_theta.risk_mode = "neutral"
         new_theta.enter_th = max(0.01, current_theta.enter_th * (1 - adjustment_factor * 0.8))
-        new_theta.exit_th = min(-0.08, current_theta.exit_th * (1 - adjustment_factor * 0.6))
-    elif weekly_return < negative_threshold:  # 周收益率 < -1.5%，表现明显差
+        # 改进：不要过度放宽 exit_th，保持合理的止损
+        new_theta.exit_th = min(-0.08, current_theta.exit_th * (1 - adjustment_factor * 0.4))  # 降低调整幅度
+    elif weekly_return < negative_threshold:  # 周收益率 < -1.0%，表现不佳
         logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% < {negative_threshold*100:.2f}%，表现不佳，更保守调整")
-        new_theta.gross_exposure = max(0.50, current_theta.gross_exposure * (1 - adjustment_factor))
-        new_theta.max_w = max(0.10, current_theta.max_w * (1 - adjustment_factor))
+        # 改进：设置更高的仓位下限，避免过度保守
+        # 提高下限：从 0.50 提高到 0.60，从 0.10 提高到 0.12
+        min_gross_exposure = 0.60  # 提高下限
+        min_max_w = 0.12  # 提高下限
+        new_theta.gross_exposure = max(min_gross_exposure, current_theta.gross_exposure * (1 - adjustment_factor))
+        new_theta.max_w = max(min_max_w, current_theta.max_w * (1 - adjustment_factor))
         new_theta.turnover_cap = max(0.15, current_theta.turnover_cap * (1 - adjustment_factor))
         if current_theta.risk_mode == "risk_on":
             new_theta.risk_mode = "neutral"
         elif current_theta.risk_mode == "neutral":
             new_theta.risk_mode = "risk_off"
         new_theta.enter_th = min(0.04, current_theta.enter_th * (1 + adjustment_factor * 0.8))
-        new_theta.exit_th = max(-0.12, current_theta.exit_th * (1 - adjustment_factor * 0.6))
+        # 改进：不要过度收紧 exit_th，保持合理的止损范围
+        new_theta.exit_th = max(-0.12, current_theta.exit_th * (1 - adjustment_factor * 0.4))  # 降低调整幅度
     else:
-        # 在 ±1.5% 范围内，保持参数不变（大幅减少调整频率）
-        logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% 在正常波动范围（±{positive_threshold*100:.2f}%），保持参数不变")
+        # 在 ±1.0% 范围内，微调而非完全不变
+        # 根据收益率的正负进行微调
+        if weekly_return > 0:
+            # 小幅正收益，微调提高仓位
+            logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% 在正常波动范围（±{positive_threshold*100:.2f}%），小幅正收益，微调提高仓位")
+            new_theta.gross_exposure = min(0.85, current_theta.gross_exposure * (1 + adjustment_factor * 0.5))
+            new_theta.max_w = min(0.20, current_theta.max_w * (1 + adjustment_factor * 0.5))
+        elif weekly_return < 0:
+            # 小幅负收益，微调降低仓位（但设置下限，避免过度保守）
+            logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% 在正常波动范围（±{positive_threshold*100:.2f}%），小幅负收益，微调降低仓位")
+            min_gross_exposure = 0.60  # 提高下限
+            min_max_w = 0.12  # 提高下限
+            new_theta.gross_exposure = max(min_gross_exposure, current_theta.gross_exposure * (1 - adjustment_factor * 0.5))
+            new_theta.max_w = max(min_max_w, current_theta.max_w * (1 - adjustment_factor * 0.5))
+        else:
+            # 收益率为 0，保持参数不变
+            logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% 接近 0，保持参数不变")
     
     logger.info(f"[Naive Reflection Fallback] 参数调整: {current_theta} -> {new_theta}")
     return new_theta
