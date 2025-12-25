@@ -103,3 +103,4 @@ class RAGOutput:
             f"Risks: {[f.value for f in self.risk_flags]}"
         )
 
+
