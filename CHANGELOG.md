@@ -69,3 +69,6 @@
       解读: 感觉有点类似 multi agent
     - RL-driven
       实现难度太高了, 但是 state, action 的思路依旧可以参考
+    
+- 因为 LLM 调度开销实在太大, 决定用 reflection driven model 对整体仓位进行优化
+  同时因为 multi asset model 收益率一直非常低, 优化空间十足,故选择这个作为实验对象
