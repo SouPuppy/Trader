@@ -40,6 +40,7 @@ if str(project_root) not in sys.path:
 from trader.agent.theta import Theta
 from trader.agent.signal_layer import SignalLayer
 from trader.agent.constrained_allocator import ConstrainedAllocator
+from trader.agent.learnable_reflection import LearnableReflectionSystem
 from trader.backtest.account import Account
 from trader.backtest.market import Market
 from trader.backtest.reflection_engine import ReflectionEngine
@@ -409,55 +410,55 @@ def naive_reflection_fallback(current_theta: Theta, weekly_return: float, reflec
     new_theta = current_theta.copy()
     new_theta.reflection_id = reflection_id
     
-    # 改进：降低阈值，更积极的调整策略
-    adjustment_factor = 0.02  # 2% 的调整幅度
-    positive_threshold = 0.01  # 1.0%（降低阈值，更积极）
-    negative_threshold = -0.01  # -1.0%
+    # 优化：更积极的调整策略，充分利用盈利机会
+    adjustment_factor = 0.03  # 3% 的调整幅度（提高）
+    positive_threshold = 0.008  # 0.8%（降低阈值，更积极）
+    negative_threshold = -0.012  # -1.2%（放宽负阈值，避免过度反应）
     
-    if weekly_return > positive_threshold:  # 周收益率 > 1.0%，表现良好
-        logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% > {positive_threshold*100:.2f}%，表现良好，适度激进调整")
-        # 改进：更积极地提高仓位，充分利用盈利机会
-        # 使用更大的调整幅度，确保仓位能充分利用盈利
-        aggressive_factor = adjustment_factor * 1.5  # 1.5倍调整幅度
-        new_theta.gross_exposure = min(0.85, current_theta.gross_exposure * (1 + aggressive_factor))
-        new_theta.max_w = min(0.20, current_theta.max_w * (1 + aggressive_factor))
-        new_theta.turnover_cap = min(0.30, current_theta.turnover_cap * (1 + adjustment_factor * 0.6))
+    if weekly_return > positive_threshold:  # 周收益率 > 0.8%，表现良好
+        logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% > {positive_threshold*100:.2f}%，表现良好，积极激进调整")
+        # 更积极地提高仓位，充分利用盈利机会
+        aggressive_factor = adjustment_factor * 2.0  # 2倍调整幅度（更激进）
+        new_theta.gross_exposure = min(0.95, current_theta.gross_exposure * (1 + aggressive_factor))  # 上限提高到95%
+        new_theta.max_w = min(0.25, current_theta.max_w * (1 + aggressive_factor))  # 单票上限提高到25%
+        new_theta.turnover_cap = min(0.35, current_theta.turnover_cap * (1 + adjustment_factor * 0.8))
         if current_theta.risk_mode == "risk_off":
             new_theta.risk_mode = "neutral"
-        new_theta.enter_th = max(0.01, current_theta.enter_th * (1 - adjustment_factor * 0.8))
-        # 改进：不要过度放宽 exit_th，保持合理的止损
-        new_theta.exit_th = min(-0.08, current_theta.exit_th * (1 - adjustment_factor * 0.4))  # 降低调整幅度
-    elif weekly_return < negative_threshold:  # 周收益率 < -1.0%，表现不佳
-        logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% < {negative_threshold*100:.2f}%，表现不佳，更保守调整")
-        # 改进：设置更高的仓位下限，避免过度保守
-        # 提高下限：从 0.50 提高到 0.60，从 0.10 提高到 0.12
-        min_gross_exposure = 0.60  # 提高下限
-        min_max_w = 0.12  # 提高下限
-        new_theta.gross_exposure = max(min_gross_exposure, current_theta.gross_exposure * (1 - adjustment_factor))
-        new_theta.max_w = max(min_max_w, current_theta.max_w * (1 - adjustment_factor))
-        new_theta.turnover_cap = max(0.15, current_theta.turnover_cap * (1 - adjustment_factor))
+        elif current_theta.risk_mode == "neutral":
+            new_theta.risk_mode = "risk_on"  # 正收益时更激进
+        new_theta.enter_th = max(0.01, current_theta.enter_th * (1 - adjustment_factor * 1.2))  # 更大幅度降低阈值
+        # 适度放宽 exit_th，但保持合理止损
+        new_theta.exit_th = min(-0.08, current_theta.exit_th * (1 - adjustment_factor * 0.5))
+    elif weekly_return < negative_threshold:  # 周收益率 < -1.2%，表现不佳
+        logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% < {negative_threshold*100:.2f}%，表现不佳，适度保守调整")
+        # 设置更高的仓位下限，避免过度保守
+        min_gross_exposure = 0.70  # 提高下限到70%（更积极）
+        min_max_w = 0.15  # 提高下限到15%
+        new_theta.gross_exposure = max(min_gross_exposure, current_theta.gross_exposure * (1 - adjustment_factor * 0.8))  # 降低调整幅度
+        new_theta.max_w = max(min_max_w, current_theta.max_w * (1 - adjustment_factor * 0.8))
+        new_theta.turnover_cap = max(0.20, current_theta.turnover_cap * (1 - adjustment_factor * 0.6))  # 提高下限
         if current_theta.risk_mode == "risk_on":
             new_theta.risk_mode = "neutral"
         elif current_theta.risk_mode == "neutral":
             new_theta.risk_mode = "risk_off"
-        new_theta.enter_th = min(0.04, current_theta.enter_th * (1 + adjustment_factor * 0.8))
-        # 改进：不要过度收紧 exit_th，保持合理的止损范围
-        new_theta.exit_th = max(-0.12, current_theta.exit_th * (1 - adjustment_factor * 0.4))  # 降低调整幅度
+        new_theta.enter_th = min(0.03, current_theta.enter_th * (1 + adjustment_factor * 0.6))  # 降低调整幅度
+        # 适度收紧 exit_th，但不要过度
+        new_theta.exit_th = max(-0.11, current_theta.exit_th * (1 - adjustment_factor * 0.3))
     else:
         # 在 ±1.0% 范围内，微调而非完全不变
         # 根据收益率的正负进行微调
         if weekly_return > 0:
             # 小幅正收益，微调提高仓位
             logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% 在正常波动范围（±{positive_threshold*100:.2f}%），小幅正收益，微调提高仓位")
-            new_theta.gross_exposure = min(0.85, current_theta.gross_exposure * (1 + adjustment_factor * 0.5))
-            new_theta.max_w = min(0.20, current_theta.max_w * (1 + adjustment_factor * 0.5))
+            new_theta.gross_exposure = min(0.95, current_theta.gross_exposure * (1 + adjustment_factor * 0.7))  # 更积极
+            new_theta.max_w = min(0.25, current_theta.max_w * (1 + adjustment_factor * 0.7))
         elif weekly_return < 0:
             # 小幅负收益，微调降低仓位（但设置下限，避免过度保守）
             logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% 在正常波动范围（±{positive_threshold*100:.2f}%），小幅负收益，微调降低仓位")
-            min_gross_exposure = 0.60  # 提高下限
-            min_max_w = 0.12  # 提高下限
-            new_theta.gross_exposure = max(min_gross_exposure, current_theta.gross_exposure * (1 - adjustment_factor * 0.5))
-            new_theta.max_w = max(min_max_w, current_theta.max_w * (1 - adjustment_factor * 0.5))
+            min_gross_exposure = 0.70  # 提高下限到70%
+            min_max_w = 0.15  # 提高下限到15%
+            new_theta.gross_exposure = max(min_gross_exposure, current_theta.gross_exposure * (1 - adjustment_factor * 0.4))  # 降低调整幅度
+            new_theta.max_w = max(min_max_w, current_theta.max_w * (1 - adjustment_factor * 0.4))
         else:
             # 收益率为 0，保持参数不变
             logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% 接近 0，保持参数不变")
@@ -497,11 +498,11 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
     
     if initial_theta is None:
         initial_theta = Theta(
-            gross_exposure=0.85,  # 提高总仓位到85%，充分利用资金
-            max_w=0.20,  # 单票上限20%，允许集中配置优质股票
-            turnover_cap=0.25,  # 适度提高换手率上限，允许灵活调整
+            gross_exposure=0.92,  # 提高总仓位到92%，充分利用资金
+            max_w=0.22,  # 单票上限22%，允许集中配置优质股票
+            turnover_cap=0.30,  # 适度提高换手率上限，允许灵活调整
             risk_mode="neutral",
-            enter_th=0.02,  # 降低进场阈值，让更多股票有机会
+            enter_th=0.015,  # 降低进场阈值，让更多股票有机会
             exit_th=-0.10  # 放宽出场阈值，避免过早止损
         )
     
@@ -546,13 +547,13 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
     
     logger.info(f"数据范围: {available_dates[0]} 至 {available_dates[-1]}")
     
-    # 创建Layer A: Signal Layer（优化权重）
+    # 创建Layer A: Signal Layer（优化权重，提高趋势权重）
     signal_layer = SignalLayer(
         name="SignalLayer",
-        w_T=0.5,
-        w_V=0.15,
-        w_F=0.20,
-        w_N=0.15,
+        w_T=0.60,  # 提高趋势权重到60%，更关注趋势
+        w_V=0.12,  # 降低波动率权重
+        w_F=0.18,  # 降低基本面权重
+        w_N=0.10,  # 降低新闻权重
         theta=initial_theta
     )
     
@@ -567,6 +568,13 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
     weekly_equity_history: Dict[str, float] = {}
     last_reflection_date: Optional[str] = None
     reflection_count = 0
+    
+    # 初始化可训练的反思系统
+    history_file = output_dir / 'reflection_history.json'
+    learnable_reflection = LearnableReflectionSystem(history_file=history_file)
+    
+    # 跟踪待评估的反思（reflection_id -> (date, weekly_return_before, account_equity_before)）
+    pending_evaluations: Dict[int, Tuple[str, float, float]] = {}
     
     # 注册交易日回调
     def on_trading_day(eng: ReflectionEngine, date: str):
@@ -666,19 +674,52 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
             reflection_count += 1
             current_theta = eng.get_current_theta()
             
+            # 先尝试使用学习到的知识
+            learned_theta = learnable_reflection.learn_adjustment(
+                current_theta=current_theta,
+                weekly_return=weekly_return,
+                account_equity=account_equity
+            )
+            
             # 构建决策时间（ISO8601 格式）
             decision_time = f"{date}T00:00:00"
             
-            new_theta = rag_reflection(
-                current_theta=current_theta,
-                weekly_return=weekly_return,
-                account_equity=account_equity,
-                initial_cash=account.initial_cash,
-                stock_codes=stock_codes,
+            # 如果学习系统有建议，优先使用；否则使用 RAG/naive
+            if learned_theta:
+                logger.info(f"[Learnable Reflection] 使用学习到的调整建议（第 {reflection_count} 次反思）")
+                new_theta = learned_theta
+                new_theta.reflection_id = reflection_count
+                adjustment_reason = "基于历史经验学习到的调整"
+                adjustment_source = "learned"
+            else:
+                # 使用 RAG 或 naive reflection
+                new_theta = rag_reflection(
+                    current_theta=current_theta,
+                    weekly_return=weekly_return,
+                    account_equity=account_equity,
+                    initial_cash=account.initial_cash,
+                    stock_codes=stock_codes,
+                    reflection_id=reflection_count,
+                    decision_time=decision_time,
+                    llm_model=llm_model
+                )
+                adjustment_reason = "RAG/Naive reflection"
+                adjustment_source = "rag"  # 简化处理，实际可能是 "rag" 或 "naive"
+            
+            # 记录反思（在更新参数前记录调整前的状态）
+            learnable_reflection.record_reflection(
                 reflection_id=reflection_count,
-                decision_time=decision_time,
-                llm_model=llm_model
+                date=date,
+                current_theta=current_theta,
+                new_theta=new_theta,
+                weekly_return_before=weekly_return,
+                account_equity_before=account_equity,
+                adjustment_reason=adjustment_reason,
+                adjustment_source=adjustment_source
             )
+            
+            # 记录待评估的反思（一周后评估效果）
+            pending_evaluations[reflection_count] = (date, weekly_return, account_equity)
             
             # 更新参数
             eng.update_theta(new_theta, date)
@@ -686,6 +727,37 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
             # 更新 allocator 和 signal_layer 的参数
             allocator.update_theta(new_theta)
             signal_layer.update_theta(new_theta)
+            
+            # 评估之前的反思效果（如果已经过去一周）
+            if last_reflection_date:
+                # 找到一周前的反思ID
+                for prev_reflection_id, (prev_date, prev_weekly_return, prev_equity) in list(pending_evaluations.items()):
+                    # 计算日期差（简化：假设每周5个交易日）
+                    try:
+                        prev_date_obj = datetime.strptime(prev_date, "%Y-%m-%d")
+                        current_date_obj = datetime.strptime(date, "%Y-%m-%d")
+                        days_diff = (current_date_obj - prev_date_obj).days
+                        
+                        # 如果已经过去一周（5个交易日），评估效果
+                        if days_diff >= 5:
+                            # 计算调整后一周的收益率
+                            if prev_date in weekly_equity_history:
+                                prev_equity_at_reflection = weekly_equity_history[prev_date]
+                                weekly_return_after = (account_equity - prev_equity_at_reflection) / prev_equity_at_reflection if prev_equity_at_reflection > 0 else 0.0
+                                
+                                # 更新反思结果
+                                learnable_reflection.update_reflection_result(
+                                    reflection_id=prev_reflection_id,
+                                    weekly_return_after=weekly_return_after,
+                                    account_equity_after=account_equity
+                                )
+                                
+                                # 从待评估列表中移除
+                                del pending_evaluations[prev_reflection_id]
+                                
+                                logger.info(f"[Learnable Reflection] 评估反思 {prev_reflection_id} 的效果: 调整前收益率 {prev_weekly_return*100:.2f}%, 调整后收益率 {weekly_return_after*100:.2f}%")
+                    except Exception as e:
+                        logger.debug(f"评估反思效果时出错: {e}")
             
             # 记录本次反思日期
             last_reflection_date = date
@@ -708,8 +780,8 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
             # 计算需要调整的金额
             diff_value = target_value - current_value
             
-            # 如果变化很小（小于账户权益的0.5%），不需要交易
-            min_trade_threshold = account_equity * 0.005
+            # 如果变化很小（小于账户权益的0.8%），不需要交易（提高阈值，减少交易）
+            min_trade_threshold = account_equity * 0.008
             if abs(diff_value) < min_trade_threshold:
                 continue
             
@@ -748,7 +820,7 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
                         if weight > 0:
                             # 按权重分配资金
                             invest_amount = excess_cash * (weight / total_weight)
-                            if invest_amount > min_trade_threshold_balance:
+                            if invest_amount > min_trade_threshold_balance * 1.5:  # 提高阈值，减少小额交易
                                 eng.buy(stock_code, amount=invest_amount)
                                 logger.debug(f"[Balance] 买入 {stock_code}: {invest_amount:,.2f} 元")
     
@@ -791,6 +863,18 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
     logger.info(f"交易次数: {len(account.trades)}")
     logger.info(f"参数变化次数: {len(engine.theta_history)}")
     logger.info(f"反思次数: {reflection_count}")
+    
+    # 输出学习统计信息
+    stats = learnable_reflection.get_statistics()
+    logger.info("")
+    logger.info("=== 可训练反思系统统计 ===")
+    logger.info(f"总反思次数: {stats['total_reflections']}")
+    logger.info(f"总评估次数: {stats['total_effectiveness_evaluations']}")
+    logger.info(f"平均有效性评分: {stats['avg_effectiveness']:.3f}")
+    logger.info(f"学习到的模式数: {stats['learned_patterns_count']}")
+    for return_range, range_stats in stats['return_ranges'].items():
+        logger.info(f"  {return_range}: {range_stats['count']} 次, 平均有效性 {range_stats['avg_effectiveness']:.3f}, 成功调整 {range_stats['successful_adjustments_count']} 次")
+    
     logger.info(log_separator())
     
     # 生成参数化报告
@@ -820,11 +904,11 @@ if __name__ == "__main__":
         ],
         initial_cash=1000000.0,
         initial_theta=Theta(
-            gross_exposure=0.85,
-            max_w=0.20,
-            turnover_cap=0.25,
+            gross_exposure=0.92,  # 提高初始仓位到92%
+            max_w=0.22,  # 提高单票上限到22%
+            turnover_cap=0.30,  # 提高换手率上限
             risk_mode="neutral",
-            enter_th=0.02,
+            enter_th=0.015,  # 降低进场阈值
             exit_th=-0.10
         ),
         start_date=None,
