@@ -15,9 +15,9 @@ from trader.rag.types import RetrievalPlan, Candidate, Document
 from trader.rag.db.queries import get_db_connection
 from trader.news.prepare import parse_news_json, clean_html, extract_text_from_news
 from trader.news.analyze import analyze
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 
 class NewsRetriever:

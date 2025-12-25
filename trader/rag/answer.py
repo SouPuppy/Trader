@@ -23,9 +23,9 @@ from .normalize_citations import normalize_citations, sanitize_citations
 from .verify import verify_answer
 from .observability import log_all
 from .db.queries import ensure_tables
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 
 def rag_answer(

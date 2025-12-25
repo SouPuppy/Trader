@@ -11,9 +11,9 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from trader.config import get_deepseek_api_key
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 
 def llm_generate(prompt: str, model: str = "deepseek-chat", temperature: float = 0.3) -> str:

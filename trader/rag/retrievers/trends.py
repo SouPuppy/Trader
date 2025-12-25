@@ -13,9 +13,9 @@ if str(project_root) not in sys.path:
 
 from trader.rag.types import RetrievalPlan, Candidate, Document
 from trader.rag.db.queries import get_db_connection
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 
 class TrendsRetriever:

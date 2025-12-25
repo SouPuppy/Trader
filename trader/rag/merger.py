@@ -11,9 +11,9 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from trader.rag.types import Candidate, DocType
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 
 def merge_candidates(cands_by_type: Dict[DocType, List[Candidate]]) -> List[Candidate]:

@@ -60,12 +60,17 @@ def hierarchical_multiasset_strategy(
         train_test_split_ratio: 训练/测试分割比例
     """
     if stock_codes is None:
-        stock_codes = ["AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O"]
+        stock_codes = [
+            "AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O",
+            "TSLA.O", "META.O", "ASML.O", "MRNA.O", "NFLX.O",
+            "AMD.O", "INTC.O", "ADBE.O", "CRM.N", "ORCL.N",
+            "CSCO.O", "JPM.N", "V.N", "MA.N", "WMT.N"
+        ]
     
     if initial_theta is None:
         initial_theta = Theta(
             gross_exposure=0.85,  # 提高总仓位到85%，充分利用资金
-            max_w=0.30,  # 提高单票上限到20%，允许集中配置优质股票
+            max_w=0.20,  # 单票上限20%，允许集中配置优质股票
             turnover_cap=0.25,  # 适度提高换手率上限，允许灵活调整
             risk_mode="neutral",
             enter_th=0.02,  # 降低进场阈值，让更多股票有机会
@@ -169,6 +174,33 @@ def hierarchical_multiasset_strategy(
                     shares_to_sell = min(shares_to_sell, position['shares'])
                     if shares_to_sell > 0:
                         eng.sell(stock_code, shares=shares_to_sell)
+        
+        # Balance 要求：确保大量资金都在股市里（现金比例不超过10%）
+        # 如果现金比例过高，按权重比例买入股票
+        # 重新获取账户权益（交易后可能已变化）
+        market_prices_after_trade = eng.get_market_prices(stock_codes)
+        account_equity_after_trade = account.equity(market_prices_after_trade)
+        cash_ratio = account.cash / account_equity_after_trade if account_equity_after_trade > 0 else 1.0
+        max_cash_ratio = 0.10  # 最多保留10%现金
+        
+        if cash_ratio > max_cash_ratio and account.cash > 0:
+            # 计算需要投入的资金
+            excess_cash = account.cash - (account_equity_after_trade * max_cash_ratio)
+            min_trade_threshold_balance = account_equity_after_trade * 0.005
+            if excess_cash > min_trade_threshold_balance:
+                logger.info(f"[Balance] 现金比例 {cash_ratio*100:.2f}% 过高，需要投入 {excess_cash:,.2f} 元到股市")
+                
+                # 按当前权重比例分配多余现金
+                total_weight = sum(target_weights.values())
+                if total_weight > 0:
+                    for stock_code in stock_codes:
+                        weight = target_weights.get(stock_code, 0.0)
+                        if weight > 0:
+                            # 按权重分配资金
+                            invest_amount = excess_cash * (weight / total_weight)
+                            if invest_amount > min_trade_threshold_balance:
+                                eng.buy(stock_code, amount=invest_amount)
+                                logger.debug(f"[Balance] 买入 {stock_code}: {invest_amount:,.2f} 元")
     
     engine.on_date(on_trading_day)
     
@@ -229,7 +261,12 @@ def hierarchical_multiasset_strategy(
 if __name__ == "__main__":
     # 执行层级式多资产交易策略（无反思层）
     hierarchical_multiasset_strategy(
-        stock_codes=["AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O"],
+        stock_codes=[
+            "AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O",
+            "TSLA.O", "META.O", "ASML.O", "MRNA.O", "NFLX.O",
+            "AMD.O", "INTC.O", "ADBE.O", "CRM.N", "ORCL.N",
+            "CSCO.O", "JPM.N", "V.N", "MA.N", "WMT.N"
+        ],
         initial_cash=1000000.0,
         initial_theta=Theta(
             gross_exposure=0.85,  # 提高总仓位到85%，充分利用资金

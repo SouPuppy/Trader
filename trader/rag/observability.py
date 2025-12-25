@@ -16,10 +16,10 @@ from trader.rag.types import (
 )
 from trader.rag.calculate_trends import calculate_trends_statistics
 from trader.rag.normalize_citations import extract_citations
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 from datetime import datetime
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 
 def log_all(

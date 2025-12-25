@@ -91,9 +91,9 @@ def build_reflection_question(
     """
     total_return = (account_equity - initial_cash) / initial_cash if initial_cash > 0 else 0.0
     
-    question = f"""作为专业的量化交易策略分析师，请基于以下信息评估交易策略的表现，并提供参数调整建议。
+    question = f"""作为专业的量化交易策略分析师，请基于以下信息评估多资产组合交易策略的表现，并提供参数调整建议。
 
-当前策略参数（θ）：
+【当前策略参数（θ）】
 - 总仓位上限 (gross_exposure): {current_theta.gross_exposure:.2f}
 - 单票上限 (max_w): {current_theta.max_w:.2f}
 - 换手率上限 (turnover_cap): {current_theta.turnover_cap:.2f}
@@ -101,21 +101,23 @@ def build_reflection_question(
 - 进场阈值 (enter_th): {current_theta.enter_th:.3f}
 - 出场阈值 (exit_th): {current_theta.exit_th:.3f}
 
-交易表现：
+【交易表现】
 - 本周收益率: {weekly_return*100:.2f}%
 - 累计收益率: {total_return*100:.2f}%
 - 当前账户权益: {account_equity:,.2f} 元
 - 初始资金: {initial_cash:,.2f} 元
-- 交易股票池: {', '.join(stock_codes)}
+- 交易股票池（多资产组合）: {', '.join(stock_codes)}
 
-请基于历史数据、新闻、趋势等多维度信息，分析：
-1. 本周表现是否良好？原因是什么？
-2. 当前市场环境如何？有哪些风险或机会？
-3. 策略参数是否需要调整？如何调整？
+【分析要求】
+请基于 RAG 系统检索到的历史数据、新闻、趋势等多维度信息，分析：
+1. 本周表现评估：本周收益率 {weekly_return*100:.2f}% 是否良好？与市场整体表现相比如何？
+2. 市场环境分析：当前市场环境如何？组合中的股票（{', '.join(stock_codes)}）有哪些共同的风险或机会？
+3. 参数调整建议：基于市场环境和策略表现，策略参数是否需要调整？如何调整才能提升收益或降低风险？
 
+【输出格式】
 请以 JSON 格式返回参数调整建议，格式如下：
 {{
-    "analysis": "简要分析本周表现和市场环境",
+    "analysis": "简要分析本周表现和市场环境（基于检索到的证据）",
     "adjustments": {{
         "gross_exposure": 调整值或null（不调整）,
         "max_w": 调整值或null,
@@ -124,17 +126,20 @@ def build_reflection_question(
         "enter_th": 调整值或null,
         "exit_th": 调整值或null
     }},
-    "reasoning": "调整理由的详细说明"
+    "reasoning": "调整理由的详细说明（应引用检索到的证据）"
 }}
 
-注意：
-- 参数调整应该保守且渐进，避免大幅波动
-- gross_exposure 范围: [0.4, 0.85]
-- max_w 范围: [0.08, 0.18]
-- turnover_cap 范围: [0.10, 0.35]
-- enter_th 范围: [0.01, 0.05]
-- exit_th 范围: [-0.15, -0.08]
-- 如果某个参数不需要调整，设置为 null
+【重要约束】
+- 参数调整必须保守且渐进，避免大幅波动
+- 只在有明显证据支持时才调整参数
+- 如果市场环境不明确或证据不足，保持参数不变（设置为 null）
+- 参数范围限制：
+  * gross_exposure: [0.4, 0.85]
+  * max_w: [0.08, 0.18]
+  * turnover_cap: [0.10, 0.35]
+  * enter_th: [0.01, 0.05]
+  * exit_th: [-0.15, -0.08]
+- 如果某个参数不需要调整，必须设置为 null（不要使用当前值）
 """
     return question
 
@@ -257,11 +262,18 @@ def rag_reflection(
     
     logger.info(f"[RAG Reflection] 开始 RAG 反思（第 {reflection_id} 次）")
     logger.info(f"[RAG Reflection] 周收益率: {weekly_return*100:.2f}%")
+    logger.info(f"[RAG Reflection] 交易股票池: {', '.join(stock_codes)}")
     
     # 调用 RAG 系统（使用第一只股票作为代表，因为 RAG 系统需要 stock_code）
+    # 注意：问题中已包含所有股票信息，RAG 系统会基于问题内容检索相关信息
     primary_stock = stock_codes[0] if stock_codes else None
     
+    if not primary_stock:
+        logger.warning("[RAG Reflection] 没有股票代码，回退到 naive reflection")
+        return naive_reflection_fallback(current_theta, weekly_return, reflection_id)
+    
     try:
+        logger.info(f"[RAG Reflection] 调用 RAG 系统，使用股票代码: {primary_stock}")
         verified_answer = rag_answer(
             question=question,
             stock_code=primary_stock,
@@ -273,13 +285,19 @@ def rag_reflection(
             logger.warning("[RAG Reflection] RAG 系统返回空结果，回退到 naive reflection")
             return naive_reflection_fallback(current_theta, weekly_return, reflection_id)
         
-        logger.info(f"[RAG Reflection] RAG 系统调用成功: passed={verified_answer.passed}, mode={verified_answer.mode}")
+        logger.info(f"[RAG Reflection] RAG 系统调用成功:")
+        logger.info(f"  - 验证状态: {'通过' if verified_answer.passed else '未通过'}")
+        logger.info(f"  - 模式: {verified_answer.mode}")
+        logger.info(f"  - 使用的文档数: {len(verified_answer.used_doc_ids)}")
+        if verified_answer.violations:
+            logger.warning(f"  - 验证违规: {verified_answer.violations}")
         
         # 解析 RAG 答案
         adjustments = parse_rag_adjustments(verified_answer.answer, current_theta)
         
         if not adjustments:
             logger.warning("[RAG Reflection] 无法解析 RAG 答案，回退到 naive reflection")
+            logger.debug(f"[RAG Reflection] RAG 原始答案: {verified_answer.answer[:500]}...")
             return naive_reflection_fallback(current_theta, weekly_return, reflection_id)
         
         # 应用调整
@@ -307,7 +325,7 @@ def rag_reflection(
 
 def naive_reflection_fallback(current_theta: Theta, weekly_return: float, reflection_id: int) -> Theta:
     """
-    Naive reflection 回退方案（当 RAG 系统不可用时使用）
+    保守的反思回退方案（当 RAG 系统不可用时使用，使用与 4.2 相同的保守策略）
     
     Args:
         current_theta: 当前参数θ
@@ -320,34 +338,36 @@ def naive_reflection_fallback(current_theta: Theta, weekly_return: float, reflec
     new_theta = current_theta.copy()
     new_theta.reflection_id = reflection_id
     
-    adjustment_factor = 0.03  # 3% 的调整幅度
-    positive_threshold = 0.005  # 0.5%
-    negative_threshold = -0.005  # -0.5%
+    # 使用与 4.2 相同的保守策略：提高阈值，降低调整幅度
+    adjustment_factor = 0.02  # 2% 的调整幅度（更保守）
+    positive_threshold = 0.015  # 1.5%（大幅提高，减少调整频率）
+    negative_threshold = -0.015  # -1.5%
     
-    if weekly_return > positive_threshold:
-        logger.info(f"[Naive Reflection] 周收益率 {weekly_return*100:.2f}% > {positive_threshold*100:.2f}%，表现良好，稍微激进调整")
+    if weekly_return > positive_threshold:  # 周收益率 > 1.5%，表现明显好
+        logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% > {positive_threshold*100:.2f}%，表现良好，适度激进调整")
         new_theta.gross_exposure = min(0.85, current_theta.gross_exposure * (1 + adjustment_factor))
-        new_theta.max_w = min(0.18, current_theta.max_w * (1 + adjustment_factor))
-        new_theta.turnover_cap = min(0.35, current_theta.turnover_cap * (1 + adjustment_factor * 0.8))
+        new_theta.max_w = min(0.20, current_theta.max_w * (1 + adjustment_factor))
+        new_theta.turnover_cap = min(0.30, current_theta.turnover_cap * (1 + adjustment_factor * 0.6))
         if current_theta.risk_mode == "risk_off":
             new_theta.risk_mode = "neutral"
-        new_theta.enter_th = max(0.01, current_theta.enter_th * (1 - adjustment_factor))
-        new_theta.exit_th = min(-0.08, current_theta.exit_th * (1 - adjustment_factor * 0.8))
-    elif weekly_return < negative_threshold:
-        logger.info(f"[Naive Reflection] 周收益率 {weekly_return*100:.2f}% < {negative_threshold*100:.2f}%，表现不佳，更保守调整")
-        new_theta.gross_exposure = max(0.4, current_theta.gross_exposure * (1 - adjustment_factor))
-        new_theta.max_w = max(0.08, current_theta.max_w * (1 - adjustment_factor))
-        new_theta.turnover_cap = max(0.10, current_theta.turnover_cap * (1 - adjustment_factor))
+        new_theta.enter_th = max(0.01, current_theta.enter_th * (1 - adjustment_factor * 0.8))
+        new_theta.exit_th = min(-0.08, current_theta.exit_th * (1 - adjustment_factor * 0.6))
+    elif weekly_return < negative_threshold:  # 周收益率 < -1.5%，表现明显差
+        logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% < {negative_threshold*100:.2f}%，表现不佳，更保守调整")
+        new_theta.gross_exposure = max(0.50, current_theta.gross_exposure * (1 - adjustment_factor))
+        new_theta.max_w = max(0.10, current_theta.max_w * (1 - adjustment_factor))
+        new_theta.turnover_cap = max(0.15, current_theta.turnover_cap * (1 - adjustment_factor))
         if current_theta.risk_mode == "risk_on":
             new_theta.risk_mode = "neutral"
         elif current_theta.risk_mode == "neutral":
             new_theta.risk_mode = "risk_off"
-        new_theta.enter_th = min(0.05, current_theta.enter_th * (1 + adjustment_factor))
-        new_theta.exit_th = max(-0.15, current_theta.exit_th * (1 - adjustment_factor * 0.8))
+        new_theta.enter_th = min(0.04, current_theta.enter_th * (1 + adjustment_factor * 0.8))
+        new_theta.exit_th = max(-0.12, current_theta.exit_th * (1 - adjustment_factor * 0.6))
     else:
-        logger.info(f"[Naive Reflection] 周收益率 {weekly_return*100:.2f}% 在正常波动范围，保持参数不变")
+        # 在 ±1.5% 范围内，保持参数不变（大幅减少调整频率）
+        logger.info(f"[Naive Reflection Fallback] 周收益率 {weekly_return*100:.2f}% 在正常波动范围（±{positive_threshold*100:.2f}%），保持参数不变")
     
-    logger.info(f"[Naive Reflection] 参数调整: {current_theta} -> {new_theta}")
+    logger.info(f"[Naive Reflection Fallback] 参数调整: {current_theta} -> {new_theta}")
     return new_theta
 
 
@@ -373,16 +393,21 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
         llm_model: LLM 模型名称（RAG 系统内部使用）
     """
     if stock_codes is None:
-        stock_codes = ["AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O"]
+        stock_codes = [
+            "AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O",
+            "TSLA.O", "META.O", "ASML.O", "MRNA.O", "NFLX.O",
+            "AMD.O", "INTC.O", "ADBE.O", "CRM.N", "ORCL.N",
+            "CSCO.O", "JPM.N", "V.N", "MA.N", "WMT.N"
+        ]
     
     if initial_theta is None:
         initial_theta = Theta(
-            gross_exposure=0.85,
-            max_w=0.30,
-            turnover_cap=0.25,
+            gross_exposure=0.85,  # 提高总仓位到85%，充分利用资金
+            max_w=0.20,  # 单票上限20%，允许集中配置优质股票
+            turnover_cap=0.25,  # 适度提高换手率上限，允许灵活调整
             risk_mode="neutral",
-            enter_th=0.02,
-            exit_th=-0.10
+            enter_th=0.02,  # 降低进场阈值，让更多股票有机会
+            exit_th=-0.10  # 放宽出场阈值，避免过早止损
         )
     
     for line in log_section("层级式多资产交易系统（带 RAG 反思层）"):
@@ -604,6 +629,33 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
                     shares_to_sell = min(shares_to_sell, position['shares'])
                     if shares_to_sell > 0:
                         eng.sell(stock_code, shares=shares_to_sell)
+        
+        # Balance 要求：确保大量资金都在股市里（现金比例不超过10%）
+        # 如果现金比例过高，按权重比例买入股票
+        # 重新获取账户权益（交易后可能已变化）
+        market_prices_after_trade = eng.get_market_prices(stock_codes)
+        account_equity_after_trade = account.equity(market_prices_after_trade)
+        cash_ratio = account.cash / account_equity_after_trade if account_equity_after_trade > 0 else 1.0
+        max_cash_ratio = 0.10  # 最多保留10%现金
+        
+        if cash_ratio > max_cash_ratio and account.cash > 0:
+            # 计算需要投入的资金
+            excess_cash = account.cash - (account_equity_after_trade * max_cash_ratio)
+            min_trade_threshold_balance = account_equity_after_trade * 0.005
+            if excess_cash > min_trade_threshold_balance:
+                logger.info(f"[Balance] 现金比例 {cash_ratio*100:.2f}% 过高，需要投入 {excess_cash:,.2f} 元到股市")
+                
+                # 按当前权重比例分配多余现金
+                total_weight = sum(target_weights.values())
+                if total_weight > 0:
+                    for stock_code in stock_codes:
+                        weight = target_weights.get(stock_code, 0.0)
+                        if weight > 0:
+                            # 按权重分配资金
+                            invest_amount = excess_cash * (weight / total_weight)
+                            if invest_amount > min_trade_threshold_balance:
+                                eng.buy(stock_code, amount=invest_amount)
+                                logger.debug(f"[Balance] 买入 {stock_code}: {invest_amount:,.2f} 元")
     
     engine.on_date(on_trading_day)
     
@@ -665,7 +717,12 @@ def hierarchical_multiasset_strategy_with_rag_reflection(
 if __name__ == "__main__":
     # 执行层级式多资产交易策略（带 RAG 反思层）
     hierarchical_multiasset_strategy_with_rag_reflection(
-        stock_codes=["AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O"],
+        stock_codes=[
+            "AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O",
+            "TSLA.O", "META.O", "ASML.O", "MRNA.O", "NFLX.O",
+            "AMD.O", "INTC.O", "ADBE.O", "CRM.N", "ORCL.N",
+            "CSCO.O", "JPM.N", "V.N", "MA.N", "WMT.N"
+        ],
         initial_cash=1000000.0,
         initial_theta=Theta(
             gross_exposure=0.85,

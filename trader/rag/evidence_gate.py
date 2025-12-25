@@ -13,9 +13,9 @@ if str(project_root) not in sys.path:
 
 from trader.rag.types import EvidencePack, TaskType, RetrievalPlan
 from trader.rag.db.queries import get_db_connection
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 
 def check_data_coverage(plan: RetrievalPlan) -> Optional[str]:

@@ -7,12 +7,12 @@ from typing import List, Tuple, Optional
 from datetime import datetime
 
 from trader.config import DB_PATH
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 from trader.RAG.document import Document, DocumentSource
 from trader.RAG.query import Query, QueryFilter
 from trader.RAG.storage import RAGStorage
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 
 class RAGRetriever:

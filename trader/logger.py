@@ -204,6 +204,80 @@ def get_logger(name: str = None) -> logging.Logger:
     
     return setup_logger(name)
 
+
+def get_rag_logger(name: str = None) -> logging.Logger:
+    """
+    获取 RAG 系统的 logger 实例，所有输出到 log/rag.log
+    
+    Args:
+        name: logger 名称，如果为 None 则使用调用模块的名称
+        
+    Returns:
+        配置好的 RAG logger 实例
+    """
+    if name is None:
+        # 自动获取调用模块的名称
+        import inspect
+        frame = inspect.currentframe().f_back
+        module_name = frame.f_globals.get('__name__', 'trader.rag')
+        name = module_name
+    
+    logger = logging.getLogger(name)
+    
+    # 避免重复添加 handler
+    if logger.handlers:
+        return logger
+    
+    # 设置日志级别
+    log_level = logging.INFO
+    logger.setLevel(log_level)
+    
+    # RAG 专用日志文件
+    RAG_LOG_FILE = LOG_DIR / 'rag.log'
+    
+    # 文件 handler（带轮转，不使用颜色，但使用对齐）
+    file_handler = RotatingFileHandler(
+        RAG_LOG_FILE,
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(log_level)
+    file_formatter = ColoredFormatter(use_color=False, fmt=LOG_FORMAT, datefmt=DATE_FORMAT)
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+    
+    # 控制台 handler（可选，如果需要也在控制台显示）
+    # 使用 TqdmHandler 来避免干扰 tqdm 进度条
+    if HAS_TQDM:
+        class TqdmHandler(logging.StreamHandler):
+            """使用 tqdm.write() 输出日志，避免干扰进度条"""
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    tqdm.write(msg, file=sys.stderr)
+                    self.flush()
+                except Exception:
+                    self.handleError(record)
+        
+        console_handler = TqdmHandler(sys.stderr)
+    else:
+        console_handler = logging.StreamHandler(sys.stderr)
+    
+    console_handler.setLevel(log_level)
+    console_formatter = ColoredFormatter(
+        use_color=True,
+        fmt=LOG_FORMAT,
+        datefmt=DATE_FORMAT
+    )
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+    
+    # 防止日志传播到根 logger
+    logger.propagate = False
+    
+    return logger
+
 # 创建默认 logger
 logger = setup_logger()
 

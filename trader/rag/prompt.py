@@ -13,9 +13,9 @@ if str(project_root) not in sys.path:
 
 from trader.rag.types import RagRequest, EvidencePack
 from trader.rag.calculate_trends import calculate_trends_statistics, format_trends_summary
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 
 def build_prompt(request: RagRequest, evidence: EvidencePack, degradation_msg: str = None) -> str:

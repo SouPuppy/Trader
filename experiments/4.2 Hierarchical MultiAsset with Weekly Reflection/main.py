@@ -68,7 +68,7 @@ def is_weekend_reflection_day(date_str: str) -> bool:
 
 def naive_reflection(current_theta: Theta, weekly_return: float, reflection_id: int) -> Theta:
     """
-    Naive reflection：根据周收益率调整参数
+    保守的反思策略：只在表现明显好或差时才调整参数，避免过度反应
     
     Args:
         current_theta: 当前参数θ
@@ -81,54 +81,53 @@ def naive_reflection(current_theta: Theta, weekly_return: float, reflection_id: 
     new_theta = current_theta.copy()
     new_theta.reflection_id = reflection_id
     
-    # 优化后的调整参数
-    # 1. 调整幅度：降低到3%，使调整更平滑，避免过度反应
-    adjustment_factor = 0.03  # 3% 的调整幅度（从5%降低）
+    # 更保守的调整策略：
+    # 1. 大幅提高阈值：只在周收益率 > 1.5% 或 < -1.5% 时才调整，减少频繁调整
+    positive_threshold = 0.015  # 1.5%（大幅提高，减少调整频率）
+    negative_threshold = -0.015  # -1.5%
     
-    # 2. 阈值：提高到 ±0.5%，减少频繁调整，只在有明显表现差异时调整
-    positive_threshold = 0.005  # 0.5%（从0.3%提高）
-    negative_threshold = -0.005  # -0.5%（从-0.3%提高）
+    # 2. 降低调整幅度：从3%降到2%，使调整更平滑
+    adjustment_factor = 0.02  # 2% 的调整幅度（更保守）
     
-    # 3. 微调阈值：在 ±0.2% 范围内不调整，避免噪音干扰
-    micro_threshold = 0.002  # 0.2%
+    # 3. 移除微调逻辑：只在明显好/差时才调整，避免噪音干扰
     
-    if weekly_return > positive_threshold:  # 周收益率 > 0.5%，表现好
-        # 稍微激进：增加仓位、降低阈值、适度增加换手
-        logger.info(f"[Reflection] 周收益率 {weekly_return*100:.2f}% > {positive_threshold*100:.2f}%，表现良好，稍微激进调整")
+    if weekly_return > positive_threshold:  # 周收益率 > 1.5%，表现明显好
+        # 稍微激进：增加仓位、降低阈值
+        logger.info(f"[Reflection] 周收益率 {weekly_return*100:.2f}% > {positive_threshold*100:.2f}%，表现良好，适度激进调整")
         
         # 增加总仓位（但不超过上限，且更保守的增长）
         new_theta.gross_exposure = min(0.85, current_theta.gross_exposure * (1 + adjustment_factor))
         
         # 增加单票上限（但不超过上限）
-        new_theta.max_w = min(0.18, current_theta.max_w * (1 + adjustment_factor))
+        new_theta.max_w = min(0.20, current_theta.max_w * (1 + adjustment_factor))
         
         # 适度增加换手上限（允许更多交易，但更保守）
-        new_theta.turnover_cap = min(0.35, current_theta.turnover_cap * (1 + adjustment_factor * 0.8))
+        new_theta.turnover_cap = min(0.30, current_theta.turnover_cap * (1 + adjustment_factor * 0.6))
         
-        # 风险模式：更保守的切换，只在表现持续好时才提高
+        # 风险模式：保持中性，不轻易切换
         # 只在从 risk_off 切换到 neutral，不直接跳到 risk_on
         if current_theta.risk_mode == "risk_off":
             new_theta.risk_mode = "neutral"
-        # neutral 和 risk_on 保持不变，避免过度激进
+        # neutral 和 risk_on 保持不变
         
         # 降低进场阈值（更容易进场，但保持合理下限）
-        new_theta.enter_th = max(0.01, current_theta.enter_th * (1 - adjustment_factor))
+        new_theta.enter_th = max(0.01, current_theta.enter_th * (1 - adjustment_factor * 0.8))
         
         # 适度放宽出场阈值（更不容易止损）
-        new_theta.exit_th = min(-0.08, current_theta.exit_th * (1 - adjustment_factor * 0.8))
+        new_theta.exit_th = min(-0.08, current_theta.exit_th * (1 - adjustment_factor * 0.6))
         
-    elif weekly_return < negative_threshold:  # 周收益率 < -0.5%，表现差
-        # 更保守：降低仓位、提高阈值、减少换手
+    elif weekly_return < negative_threshold:  # 周收益率 < -1.5%，表现明显差
+        # 更保守：降低仓位、提高阈值
         logger.info(f"[Reflection] 周收益率 {weekly_return*100:.2f}% < {negative_threshold*100:.2f}%，表现不佳，更保守调整")
         
         # 降低总仓位（但不低于下限）
-        new_theta.gross_exposure = max(0.4, current_theta.gross_exposure * (1 - adjustment_factor))
+        new_theta.gross_exposure = max(0.50, current_theta.gross_exposure * (1 - adjustment_factor))
         
         # 降低单票上限（但不低于下限）
-        new_theta.max_w = max(0.08, current_theta.max_w * (1 - adjustment_factor))
+        new_theta.max_w = max(0.10, current_theta.max_w * (1 - adjustment_factor))
         
         # 降低换手上限（减少交易，降低交易成本）
-        new_theta.turnover_cap = max(0.10, current_theta.turnover_cap * (1 - adjustment_factor))
+        new_theta.turnover_cap = max(0.15, current_theta.turnover_cap * (1 - adjustment_factor))
         
         # 风险模式：更保守的切换，降低风险偏好
         if current_theta.risk_mode == "risk_on":
@@ -138,33 +137,14 @@ def naive_reflection(current_theta: Theta, weekly_return: float, reflection_id: 
         # risk_off 保持不变
         
         # 提高进场阈值（更难进场）
-        new_theta.enter_th = min(0.05, current_theta.enter_th * (1 + adjustment_factor))
+        new_theta.enter_th = min(0.04, current_theta.enter_th * (1 + adjustment_factor * 0.8))
         
         # 适度收紧出场阈值（更容易止损，但不过度）
-        new_theta.exit_th = max(-0.15, current_theta.exit_th * (1 - adjustment_factor * 0.8))
+        new_theta.exit_th = max(-0.12, current_theta.exit_th * (1 - adjustment_factor * 0.6))
         
-    elif abs(weekly_return) > micro_threshold:  # 周收益率在 ±0.2% 到 ±0.5% 之间
-        # 根据正负方向进行微调
-        if weekly_return > micro_threshold:
-            # 微幅正向，稍微激进
-            logger.info(f"[Reflection] 周收益率 {weekly_return*100:.2f}% 在微幅正向范围，微幅激进调整")
-            micro_adjustment = 0.015  # 1.5% 的微调
-            new_theta.gross_exposure = min(0.85, current_theta.gross_exposure * (1 + micro_adjustment))
-            new_theta.turnover_cap = min(0.35, current_theta.turnover_cap * (1 + micro_adjustment * 0.5))
-            new_theta.enter_th = max(0.01, current_theta.enter_th * (1 - micro_adjustment * 0.5))
-        elif weekly_return < -micro_threshold:
-            # 微幅负向，稍微保守
-            logger.info(f"[Reflection] 周收益率 {weekly_return*100:.2f}% 在微幅负向范围，微幅保守调整")
-            micro_adjustment = 0.015  # 1.5% 的微调
-            new_theta.gross_exposure = max(0.4, current_theta.gross_exposure * (1 - micro_adjustment))
-            new_theta.turnover_cap = max(0.10, current_theta.turnover_cap * (1 - micro_adjustment * 0.5))
-            new_theta.enter_th = min(0.05, current_theta.enter_th * (1 + micro_adjustment * 0.5))
-        else:
-            # 在 ±0.2% 范围内，保持参数不变
-            logger.info(f"[Reflection] 周收益率 {weekly_return*100:.2f}% 在正常波动范围，保持参数不变")
     else:
-        # 在 ±0.2% 范围内，保持参数不变
-        logger.info(f"[Reflection] 周收益率 {weekly_return*100:.2f}% 在正常波动范围，保持参数不变")
+        # 在 ±1.5% 范围内，保持参数不变（大幅减少调整频率）
+        logger.info(f"[Reflection] 周收益率 {weekly_return*100:.2f}% 在正常波动范围（±{positive_threshold*100:.2f}%），保持参数不变")
     
     logger.info(f"[Reflection] 参数调整: {current_theta} -> {new_theta}")
     return new_theta
@@ -190,12 +170,17 @@ def hierarchical_multiasset_strategy_with_reflection(
         train_test_split_ratio: 训练/测试分割比例
     """
     if stock_codes is None:
-        stock_codes = ["AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O"]
+        stock_codes = [
+            "AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O",
+            "TSLA.O", "META.O", "ASML.O", "MRNA.O", "NFLX.O",
+            "AMD.O", "INTC.O", "ADBE.O", "CRM.N", "ORCL.N",
+            "CSCO.O", "JPM.N", "V.N", "MA.N", "WMT.N"
+        ]
     
     if initial_theta is None:
         initial_theta = Theta(
             gross_exposure=0.85,  # 提高总仓位到85%，充分利用资金
-            max_w=0.30,  # 提高单票上限到20%，允许集中配置优质股票
+            max_w=0.20,  # 单票上限20%，允许集中配置优质股票
             turnover_cap=0.25,  # 适度提高换手率上限，允许灵活调整
             risk_mode="neutral",
             enter_th=0.02,  # 降低进场阈值，让更多股票有机会
@@ -411,6 +396,33 @@ def hierarchical_multiasset_strategy_with_reflection(
                     shares_to_sell = min(shares_to_sell, position['shares'])
                     if shares_to_sell > 0:
                         eng.sell(stock_code, shares=shares_to_sell)
+        
+        # Balance 要求：确保大量资金都在股市里（现金比例不超过10%）
+        # 如果现金比例过高，按权重比例买入股票
+        # 重新获取账户权益（交易后可能已变化）
+        market_prices_after_trade = eng.get_market_prices(stock_codes)
+        account_equity_after_trade = account.equity(market_prices_after_trade)
+        cash_ratio = account.cash / account_equity_after_trade if account_equity_after_trade > 0 else 1.0
+        max_cash_ratio = 0.10  # 最多保留10%现金
+        
+        if cash_ratio > max_cash_ratio and account.cash > 0:
+            # 计算需要投入的资金
+            excess_cash = account.cash - (account_equity_after_trade * max_cash_ratio)
+            min_trade_threshold_balance = account_equity_after_trade * 0.005
+            if excess_cash > min_trade_threshold_balance:
+                logger.info(f"[Balance] 现金比例 {cash_ratio*100:.2f}% 过高，需要投入 {excess_cash:,.2f} 元到股市")
+                
+                # 按当前权重比例分配多余现金
+                total_weight = sum(target_weights.values())
+                if total_weight > 0:
+                    for stock_code in stock_codes:
+                        weight = target_weights.get(stock_code, 0.0)
+                        if weight > 0:
+                            # 按权重分配资金
+                            invest_amount = excess_cash * (weight / total_weight)
+                            if invest_amount > min_trade_threshold_balance:
+                                eng.buy(stock_code, amount=invest_amount)
+                                logger.debug(f"[Balance] 买入 {stock_code}: {invest_amount:,.2f} 元")
     
     engine.on_date(on_trading_day)
     
@@ -472,7 +484,12 @@ def hierarchical_multiasset_strategy_with_reflection(
 if __name__ == "__main__":
     # 执行层级式多资产交易策略（带每周反思层）
     hierarchical_multiasset_strategy_with_reflection(
-        stock_codes=["AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O"],
+        stock_codes=[
+            "AAPL.O", "MSFT.O", "GOOGL.O", "AMZN.O", "NVDA.O",
+            "TSLA.O", "META.O", "ASML.O", "MRNA.O", "NFLX.O",
+            "AMD.O", "INTC.O", "ADBE.O", "CRM.N", "ORCL.N",
+            "CSCO.O", "JPM.N", "V.N", "MA.N", "WMT.N"
+        ],
         initial_cash=1000000.0,
         initial_theta=Theta(
             gross_exposure=0.85,  # 提高总仓位到85%，充分利用资金

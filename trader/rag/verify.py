@@ -14,9 +14,9 @@ if str(project_root) not in sys.path:
 
 from trader.rag.types import VerifiedAnswer, EvidencePack
 from trader.rag.normalize_citations import normalize_citations, extract_citations
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 # Standard citation format: [DOC:type:stock:date]
 CITATION_PATTERN = re.compile(r'\[DOC:([^:]+):([^:]+):([^\]]+)\]')

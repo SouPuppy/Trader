@@ -9,10 +9,10 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 
 from trader.config import DB_PATH
-from trader.logger import get_logger
+from trader.rag import get_rag_logger
 from trader.RAG.document import Document, DocumentSource
 
-logger = get_logger(__name__)
+logger = get_rag_logger(__name__)
 
 
 class RAGStorage:
