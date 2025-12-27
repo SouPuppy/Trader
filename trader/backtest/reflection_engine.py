@@ -132,7 +132,8 @@ class ReflectionEngine(BacktestEngine):
         stock_codes: List[str],
         start_date: str,
         end_date: str,
-        strategy_name: Optional[str] = None
+        strategy_name: Optional[str] = None,
+        is_single_stock: bool = False
     ) -> Path:
         """
         生成参数化报告
@@ -142,6 +143,7 @@ class ReflectionEngine(BacktestEngine):
             start_date: 开始日期
             end_date: 结束日期
             strategy_name: 策略名称
+            is_single_stock: 是否为单股票模式
             
         Returns:
             Path: 报告文件路径
@@ -166,7 +168,8 @@ class ReflectionEngine(BacktestEngine):
             stock_codes=stock_codes,
             start_date=start_date,
             end_date=end_date,
-            strategy_name=strategy_name
+            strategy_name=strategy_name,
+            is_single_stock=is_single_stock
         )
 
 

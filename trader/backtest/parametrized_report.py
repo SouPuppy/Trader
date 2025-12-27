@@ -35,10 +35,11 @@ class ParametrizedReport(BacktestReport):
         stock_codes: List[str],
         start_date: str,
         end_date: str,
-        strategy_name: Optional[str] = None
+        strategy_name: Optional[str] = None,
+        is_single_stock: bool = False
     ) -> Path:
         """
-        生成参数化多资产报告
+        生成参数化报告（支持多资产和单股票）
         
         Args:
             account: 账户实例
@@ -46,19 +47,25 @@ class ParametrizedReport(BacktestReport):
             start_date: 开始日期
             end_date: 结束日期
             strategy_name: 策略名称
+            is_single_stock: 是否为单股票模式
             
         Returns:
             Path: 报告文件路径
         """
-        logger.info("生成参数化多资产报告...")
+        if is_single_stock:
+            logger.info("生成参数化单股票报告...")
+            template_name = "parametrized_single_stock_template.md.j2"
+        else:
+            logger.info("生成参数化多资产报告...")
+            template_name = "parametrized_multi_asset_template.md.j2"
         
         # 准备模板数据
         template_data = self._prepare_template_data(
-            account, stock_codes, start_date, end_date, strategy_name
+            account, stock_codes, start_date, end_date, strategy_name, is_single_stock
         )
         
         # 渲染模板
-        template = self.jinja_env.get_template("parametrized_multi_asset_template.md.j2")
+        template = self.jinja_env.get_template(template_name)
         content = template.render(**template_data)
         
         # 保存报告
@@ -79,7 +86,8 @@ class ParametrizedReport(BacktestReport):
         stock_codes: List[str],
         start_date: str,
         end_date: str,
-        strategy_name: Optional[str] = None
+        strategy_name: Optional[str] = None,
+        is_single_stock: bool = False
     ) -> Dict:
         """准备模板数据（包含所有多资产报告的数据分析）"""
         from datetime import datetime
@@ -174,6 +182,7 @@ class ParametrizedReport(BacktestReport):
             'end_date': end_date,
             'trading_days': len(self.daily_records),
             'stock_count': len(stock_codes),
+            'stock_code': stock_codes[0] if stock_codes else '',  # 单股票模板使用
             'initial_cash': account.initial_cash,
             'final_state': final_state,
             'stock_performance': stock_performance,
