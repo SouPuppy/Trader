@@ -2,10 +2,11 @@
 Prompt Builder
 Generate strictly formatted prompt to ensure LLM only uses evidence
 """
-from typing import List
+from typing import List, Optional
 import sys
 from pathlib import Path
 import json
+import random
 
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
@@ -17,8 +18,81 @@ from trader.rag import get_rag_logger
 
 logger = get_rag_logger(__name__)
 
+# Path to few-shot examples file
+FEWSHOTS_FILE = Path(__file__).parent / "fewshots.json"
 
-def build_prompt(request: RagRequest, evidence: EvidencePack, degradation_msg: str = None) -> str:
+
+def load_few_shot_examples() -> List[dict]:
+    """
+    Load few-shot examples from fewshots.json
+    
+    Returns:
+        List of few-shot examples
+    """
+    try:
+        if FEWSHOTS_FILE.exists():
+            with open(FEWSHOTS_FILE, 'r', encoding='utf-8') as f:
+                examples = json.load(f)
+                if isinstance(examples, list):
+                    return examples
+                else:
+                    logger.warning(f"fewshots.json is not a list, returning empty list")
+                    return []
+        else:
+            logger.debug(f"fewshots.json not found at {FEWSHOTS_FILE}, returning empty list")
+            return []
+    except Exception as e:
+        logger.warning(f"Failed to load few-shot examples: {e}, returning empty list")
+        return []
+
+
+def format_few_shot_examples(examples: List[dict], count: int) -> str:
+    """
+    Format few-shot examples for prompt
+    
+    Args:
+        examples: List of few-shot examples
+        count: Number of examples to use
+        
+    Returns:
+        Formatted few-shot examples string
+    """
+    if not examples or count <= 0:
+        return ""
+    
+    # Select examples (randomly if we have more than needed, otherwise use all available)
+    if len(examples) > count:
+        # Randomly select if we have more examples than needed
+        selected = random.sample(examples, count)
+    else:
+        # Use all available examples if we have fewer than requested
+        selected = examples
+    
+    formatted_examples = []
+    for i, example in enumerate(selected, 1):
+        stock_code = example.get("stock_code", "N/A")
+        date = example.get("date", "N/A")
+        volatility = example.get("volatility", "N/A")
+        price_change = example.get("price_change_pct", "N/A")
+        news_context = example.get("news_context", "")
+        
+        # Truncate news context if too long
+        if len(news_context) > 2000:
+            news_context = news_context[:2000] + "..."
+        
+        formatted = f"""Example {i}:
+Stock: {stock_code}
+Date: {date}
+News Context:
+{news_context}
+Actual Volatility: {volatility}%
+Actual Price Change: {price_change}%"""
+        formatted_examples.append(formatted)
+    
+    return "\n\n".join(formatted_examples)
+
+
+def build_prompt(request: RagRequest, evidence: EvidencePack, degradation_msg: str = None, few_shot_count: int = 0) -> str:
     """
     Build prompt
     
@@ -80,6 +154,18 @@ def build_prompt(request: RagRequest, evidence: EvidencePack, degradation_msg: s
         if trends_stats:
             trends_summary = f"\n\n**Calculated Trend Statistics (use these exact values, do not invent numbers):**\n{format_trends_summary(trends_stats)}"
     
+    # Load and format few-shot examples if requested
+    few_shot_section = ""
+    if few_shot_count > 0:
+        few_shot_examples = load_few_shot_examples()
+        if few_shot_examples:
+            formatted_few_shots = format_few_shot_examples(few_shot_examples, few_shot_count)
+            if formatted_few_shots:
+                few_shot_section = f"\n\n**Few-Shot Examples:**\n{formatted_few_shots}\n\n"
+                logger.debug(f"Added {few_shot_count} few-shot examples to prompt")
+        else:
+            logger.warning(f"Few-shot count requested ({few_shot_count}) but no examples available")
+    
     # User prompt
     degradation_note = ""
     if degradation_msg:
@@ -91,7 +177,7 @@ def build_prompt(request: RagRequest, evidence: EvidencePack, degradation_msg: s
     else:
         citation_constraint = f"\n\n**ALLOWED CITATIONS (you can ONLY use these):**\n{allowed_citations_str}\n\n**If ALLOWED_DOC_IDS is empty or a citation is not in this list, do NOT use it.**"
     
-    user_prompt = f"""**Question:**
+    user_prompt = f"""{few_shot_section}**Question:**
 {request.question}
 
 **Decision Time:** {request.decision_time}

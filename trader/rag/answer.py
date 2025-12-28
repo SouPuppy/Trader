@@ -33,7 +33,8 @@ def rag_answer(
     stock_code: str = None,
     decision_time: str = None,
     frequency: str = "1d",
-    context: dict = None
+    context: dict = None,
+    few_shot_count: int = 0
 ) -> VerifiedAnswer:
     """
     RAG System End-to-End Interface
@@ -44,6 +45,7 @@ def rag_answer(
         decision_time: Decision time (ISO8601, optional)
         frequency: Frequency ('1d'/'1h'...)
         context: Context (optional)
+        few_shot_count: Number of few-shot examples to include in prompt (default: 0, no few-shot)
         
     Returns:
         VerifiedAnswer
@@ -95,8 +97,8 @@ def rag_answer(
         else:
             degradation_msg = coverage_msg
     
-    # 7. Build prompt (include degradation message if any)
-    prompt = build_prompt(req, evidence, degradation_msg=degradation_msg)
+    # 7. Build prompt (include degradation message if any, and few-shot examples if requested)
+    prompt = build_prompt(req, evidence, degradation_msg=degradation_msg, few_shot_count=few_shot_count)
     
     # 8. LLM generation
     raw = llm_generate(prompt)

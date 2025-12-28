@@ -39,6 +39,7 @@ class LogisticAgentWithRAGGate(LogisticAgent):
                  train_test_split_ratio: float = 0.7,
                  llm_model: str = "deepseek-chat",
                  llm_temperature: float = 0.3,
+                 few_shot_count: int = 0,
                  test_mode: bool = False,
                  test_force_reject: bool = False):
         """
@@ -75,6 +76,7 @@ class LogisticAgentWithRAGGate(LogisticAgent):
         
         self.llm_model = llm_model
         self.llm_temperature = llm_temperature
+        self.few_shot_count = few_shot_count
         self.test_mode = test_mode
         self.test_force_reject = test_force_reject
         self.gate_skipped_count = 0  # 记录被 gate 跳过的次数
@@ -107,7 +109,8 @@ class LogisticAgentWithRAGGate(LogisticAgent):
                 question=question,
                 stock_code=stock_code,
                 decision_time=decision_time,
-                frequency="1d"
+                frequency="1d",
+                few_shot_count=self.few_shot_count
             )
             
             if verified_answer:

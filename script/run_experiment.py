@@ -30,6 +30,25 @@ def find_experiments() -> List[Path]:
             experiments.append(item)
     return experiments
 
+def find_series_experiments(series_prefix: str) -> List[Path]:
+    """
+    查找指定系列的所有实验
+    
+    Args:
+        series_prefix: 系列前缀，例如 "6." 表示 6.x 系列
+        
+    Returns:
+        该系列的所有实验路径列表，按名称排序
+    """
+    experiments = find_experiments()
+    series_experiments = []
+    for exp in experiments:
+        if exp.name.startswith(series_prefix):
+            series_experiments.append(exp)
+    # 按名称排序，确保按顺序运行
+    series_experiments.sort(key=lambda x: x.name)
+    return series_experiments
+
 def run_experiment(exp_dir: Union[Path, str]):
     # [修复点 1] 防御性编程：强制转换为 Path 对象
     # 无论传入的是字符串还是 Path 对象，这里统一转为 Path
@@ -47,6 +66,33 @@ def run_experiment(exp_dir: Union[Path, str]):
     except KeyboardInterrupt:
         print("\nInterrupt")
 
+def run_series_experiments(series_prefix: str):
+    """
+    运行指定系列的所有实验
+    
+    Args:
+        series_prefix: 系列前缀，例如 "6." 表示 6.x 系列
+    """
+    series_experiments = find_series_experiments(series_prefix)
+    
+    if not series_experiments:
+        print(f"No experiments found for series '{series_prefix}'")
+        return
+    
+    print(f"\n{'='*60}")
+    print(f"Running {len(series_experiments)} experiments in series '{series_prefix}'")
+    print(f"{'='*60}\n")
+    
+    for i, exp in enumerate(series_experiments, 1):
+        print(f"\n[{i}/{len(series_experiments)}] Running: {exp.name}")
+        print("-" * 60)
+        run_experiment(exp)
+        print("-" * 60)
+    
+    print(f"\n{'='*60}")
+    print(f"Completed running {len(series_experiments)} experiments in series '{series_prefix}'")
+    print(f"{'='*60}\n")
+
 def main():
     while True:
         experiments = find_experiments()
@@ -59,6 +105,14 @@ def main():
             # 正常添加实验选项
             for e in experiments:
                 choices.append(questionary.Choice(title=e.name, value=e))
+        
+        # 添加运行系列实验的选项
+        SERIES_TOKEN_PREFIX = "___SERIES___"
+        series_6_experiments = find_series_experiments("6.")
+        if series_6_experiments:
+            series_6_names = [e.name for e in series_6_experiments]
+            series_6_title = f"Run 6.x series ({len(series_6_experiments)} experiments: {', '.join([n.split()[0] for n in series_6_names])})"
+            choices.append(questionary.Choice(title=series_6_title, value=f"{SERIES_TOKEN_PREFIX}6."))
         
         # [修复点 2] 使用明确的字符串标记作为退出值，避免 None 的歧义
         EXIT_TOKEN = "___EXIT___"
@@ -77,7 +131,13 @@ def main():
         if selected is None or selected == EXIT_TOKEN:
             sys.exit(0)
         
-        run_experiment(selected)
+        # 检查是否是运行系列实验的选项
+        if isinstance(selected, str) and selected.startswith(SERIES_TOKEN_PREFIX):
+            series_prefix = selected.replace(SERIES_TOKEN_PREFIX, "")
+            run_series_experiments(series_prefix)
+        else:
+            # 运行单个实验
+            run_experiment(selected)
         print() 
 
 if __name__ == "__main__":
